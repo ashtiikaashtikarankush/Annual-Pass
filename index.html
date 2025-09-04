@@ -2,11 +2,17 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <h2 class="page-title">Annual Pass Transactions — Supabase (Free) + CSV Upload</h2>
+  <title>Annual Pass Transactions (Supabase + CSV Upload)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
+    /* Center whole page content (optional but recommended) */
+    .container { max-width: 1200px; margin: 0 auto; }
+
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f7fa; }
-    h2 { color:#333; } h3{ margin-top:28px; }
+    /* Center the main page title */
+    .page-title { color:#333; text-align:center; margin: 0 0 16px 0; }
+
+    h3{ margin-top:28px; }
     .card{ background:#fff;border:1px solid #ddd;border-radius:10px;padding:14px;box-shadow:2px 2px 6px rgba(0,0,0,.08); margin-bottom:16px;}
     label{ display:block; margin:8px 0 6px; color:#444;}
     input,button,select{ padding:8px 10px; border-radius:8px; border:1px solid #aaa; }
@@ -27,7 +33,8 @@
   </style>
 </head>
 <body>
-  <h2>Annual Pass Transactions — Supabase (Free) + CSV Upload</h2>
+  <div class="container">
+    <h2 class="page-title">Annual Pass Transactions — Supabase (Free) + CSV Upload</h2>
 
   <!-- CSV UPLOAD -->
   <div class="card">
@@ -584,5 +591,6 @@
     // Print -> PDF
     document.getElementById('btnPrint').onclick = () => window.print();
   </script>
+  </div> <!-- /.container -->
 </body>
 </html>
