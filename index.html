@@ -245,16 +245,13 @@
       return isNaN(n) ? null : n;
     }
 
-    // Build op-day label in LOCAL time
-    function opDayLabelFor(ts){
-      const d = new Date(ts);                 // DB ISO -> local
-      const eight = new Date(d); eight.setHours(8,0,0,0);
-      if (d < eight) {
-        const prev = new Date(d); prev.setDate(prev.getDate()-1); prev.setHours(0,0,0,0);
-        return ymd(prev);
-      }
-      const cur = new Date(d); cur.setHours(0,0,0,0);
-      return ymd(cur);
+    // === CORE FIX ===
+    // Operational day key = LOCAL DATE of (timestamp - 8 hours)
+    function opDayKey(ts){
+      const d = new Date(ts); // DB ISO -> local instant
+      const shifted = new Date(d.getTime() - 8*60*60*1000); // move back 8h
+      shifted.setHours(0,0,0,0);
+      return ymd(shifted); // local calendar day key
     }
 
     // Build query window (local → UTC for DB)
@@ -365,20 +362,19 @@
         .gte('transaction_processed_time', globalStart.toISOString())
         .lte('transaction_processed_time', globalEnd.toISOString())
         .eq('transaction_amount', 15)
-        .order('vehicle_registration_number', { ascending: true })
-        .order('transaction_processed_time', { ascending: true });
+        .order('transaction_processed_time', { ascending: true }); // time order is enough
 
       if(error){ alert('Fetch failed: ' + error.message); return; }
 
-      // Group into operational days using LOCAL labels
+      // Group into operational days using LOCAL key (ts - 8h)
       const byOp = new Map();
       for(const r of data){
-        const lbl = opDayLabelFor(r.transaction_processed_time);
-        if(!byOp.has(lbl)) byOp.set(lbl, []);
-        byOp.get(lbl).push(r);
+        const key = opDayKey(r.transaction_processed_time);
+        if(!byOp.has(key)) byOp.set(key, []);
+        byOp.get(key).push(r);
       }
 
-      // Build labels in LOCAL time
+      // Build labels in LOCAL time for the selected range
       const labels = [];
       {
         const d = new Date(from + 'T00:00:00');  // local midnight
@@ -393,19 +389,20 @@
       const omittedRows = [];
       const dailyRows = [];
 
-      for (const lbl of labels) {
-        const rows = (byOp.get(lbl) || []).slice();
+      for (const key of labels) {
+        const rows = (byOp.get(key) || []).slice();
 
-        // process in chronological order
+        // already overall-time-ordered, but keep it safe:
         rows.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
 
         const perVeh = new Map();
         let total_txn = rows.length;
         let qualified = 0, singles = 0, returns = 0, omitted = 0;
 
-        const nextDay = new Date(lbl + 'T00:00:00');
+        // period text from the op-day key
+        const nextDay = new Date(key + 'T00:00:00');
         nextDay.setDate(nextDay.getDate() + 1);
-        const periodStr = `${lbl} 08:00:00 to ${ymd(nextDay)} 07:59:59`;
+        const periodStr = `${key} 08:00:00 to ${ymd(nextDay)} 07:59:59`;
 
         for (const r of rows) {
           const vrn = (r.vehicle_registration_number || '').toString();
