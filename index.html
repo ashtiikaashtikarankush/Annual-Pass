@@ -5,7 +5,7 @@
   <title>Annual Pass Transactions (Supabase + CSV Upload)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    /* Center whole page content (optional but recommended) */
+    /* Center whole page content */
     .container { max-width: 1200px; margin: 0 auto; }
 
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f7fa; }
@@ -30,6 +30,14 @@
     .warn{ color:#b36b00; font-weight:600; }
     .bad{ color:#b30000; font-weight:600; }
     .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+    /* Widen the first column ("Period") in Daily Summary */
+    #dailyWrap table th:first-child,
+    #dailyWrap table td:first-child {
+      width: 420px;
+      min-width: 380px;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -39,12 +47,6 @@
   <!-- CSV UPLOAD -->
   <div class="card">
     <h3>Upload CSV → <code>pass_transactions</code></h3>
-    <p class="muted">
-      The uploader accepts your CSV with these headers (any order is fine):<br/>
-      <em>
-       
-      </em>
-    </p>
     <div class="row">
       <input type="file" id="csvFile" accept=".csv" />
       <select id="csvDelimiter" title="Choose delimiter">
