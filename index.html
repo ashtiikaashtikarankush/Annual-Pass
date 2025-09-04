@@ -168,7 +168,36 @@
     <!-- libs -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+
+    <!-- XLSX multi-CDN fallback loader -->
+    <script>
+      (function loadXLSXWithFallback() {
+        const sources = [
+          "https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js",
+          "https://unpkg.com/xlsx@0.19.3/dist/xlsx.full.min.js",
+          "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.19.3/xlsx.full.min.js",
+          "https://rawcdn.githack.com/SheetJS/sheetjs/v0.19.3/dist/xlsx.full.min.js"
+        ];
+        let i = 0;
+        function tryNext() {
+          if (i >= sources.length) {
+            alert("Excel library failed to load from all CDNs. If blocked, allow one CDN or self-host xlsx.full.min.js.");
+            return;
+          }
+          const url = sources[i++];
+          const s = document.createElement("script");
+          s.src = url;
+          s.async = true;
+          s.onload = () => {
+            if (window.XLSX) { console.log("XLSX loaded:", url); }
+            else { tryNext(); }
+          };
+          s.onerror = tryNext;
+          document.head.appendChild(s);
+        }
+        tryNext();
+      })();
+    </script>
 
     <script>
       // ===== util: safe console helper =====
@@ -417,13 +446,13 @@
             }
           }
 
-          const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
-          dailyRows.push({
-            period: periodStr,
-            total_txn, qualified_txn: qualified,
-            total_single: singles, total_return: returns,
-            compensation: comp, omitted
-          });
+        const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
+        dailyRows.push({
+          period: periodStr,
+          total_txn, qualified_txn: qualified,
+          total_single: singles, total_return: returns,
+          compensation: comp, omitted
+        });
         }
 
         const tot = {
@@ -561,7 +590,6 @@
       document.getElementById('btnExportExcel').onclick = () => {
         try {
           if (!ensureXLSX()) return;
-
           const L = window.__LAST;
           const wb = XLSX.utils.book_new();
 
@@ -600,7 +628,7 @@
               "Omitted Transactions": r.omitted
             }));
             const wsDaily = XLSX.utils.json_to_sheet(dailyExport);
-            wsDaily['!cols'] = [{ wch: 40 }];
+            wsDaily['!cols'] = [{ wch: 40 }]; /* widen Period */
             setNumFmtByHeader(wsDaily, "Total Compensation", '[$₹-400]#,##0.00');
             XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
 
@@ -628,15 +656,14 @@
             setNumFmtByHeader(wsOmit, "Amount", '[$₹-400]#,##0.00');
             XLSX.utils.book_append_sheet(wb, wsOmit, 'Omitted Transactions');
           } else {
-            // 🔁 Fallback: export exactly what’s visible in the DOM tables
-            const wbDaily = XLSX.utils.table_to_book(document.getElementById('dailyTable'), { sheet: "Daily Summary" });
-            const wbKept  = XLSX.utils.table_to_book(document.getElementById('keptTable'),  { sheet: "Kept Transactions" });
-            const wbOmit  = XLSX.utils.table_to_book(document.getElementById('omitTable'),  { sheet: "Omitted Transactions" });
-            // Merge sheets into wb
-            Object.values(wbDaily.Sheets).forEach((_,i)=>{});
-            XLSX.utils.book_append_sheet(wb, wbDaily.Sheets["Daily Summary"], "Daily Summary");
-            if (wbKept.Sheets["Kept Transactions"]) XLSX.utils.book_append_sheet(wb, wbKept.Sheets["Kept Transactions"], "Kept Transactions");
-            if (wbOmit.Sheets["Omitted Transactions"]) XLSX.utils.book_append_sheet(wb, wbOmit.Sheets["Omitted Transactions"], "Omitted Transactions");
+            /* Fallback: export visible DOM tables */
+            const wsDaily = XLSX.utils.table_to_sheet(document.getElementById('dailyTable'));
+            const wsKept  = XLSX.utils.table_to_sheet(document.getElementById('keptTable'));
+            const wsOmit  = XLSX.utils.table_to_sheet(document.getElementById('omitTable'));
+            wsDaily['!cols'] = [{ wch: 40 }];
+            XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
+            if (wsKept['!ref'])  XLSX.utils.book_append_sheet(wb, wsKept,  'Kept Transactions');
+            if (wsOmit['!ref'])  XLSX.utils.book_append_sheet(wb, wsOmit,  'Omitted Transactions');
           }
 
           writeWorkbook(wb, 'summary.xlsx');
