@@ -709,17 +709,29 @@
       }
 
       // Export → one file, Summary sheet combines Overall + Daily
-      document.getElementById('btnExportExcel').onclick = () => {
-        const L = window.__LAST;
-        if (!L) { alert('Run a report first.'); return; }
-        try {
-          const xml = buildWorkbookXml(L);
-          downloadXls(xml, 'report.xls');
-        } catch (e) {
-          console.error(e);
-          alert('Excel export failed: ' + (e && e.message ? e.message : e));
-        }
-      };
+document.getElementById('btnExportExcel').onclick = () => {
+  const L = window.__LAST;
+  if (!L) { alert('Run a report first.'); return; }
+  try {
+    const xml = buildWorkbookXml(L);
+
+    // ✅ Build filename from site name + searched date range
+    const siteName = "Mundiyar_Toll";  // fixed site name
+    const from = document.getElementById('fromDate').value;
+    const to = document.getElementById('toDate').value;
+
+    let fname = `${siteName}_Annual_Pass`;
+    if (from && to) {
+      fname += `_${from}_to_${to}`;
+    }
+    fname += ".xls";
+
+    downloadXls(xml, fname);
+  } catch (e) {
+    console.error(e);
+    alert('Excel export failed: ' + (e && e.message ? e.message : e));
+  }
+};
 
       // Print -> PDF
       document.getElementById('btnPrint').onclick = () => window.print();
