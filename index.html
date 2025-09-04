@@ -50,7 +50,6 @@
         <option value="\t">Tab</option>
       </select>
       <button id="btnUpload">Parse & Upload</button>
-      <button id="btnCount" type="button" title="Quick test: count rows with amount=15">Test Count</button>
     </div>
     <div class="row" style="margin-top:8px">
       <span id="uploadInfo" class="muted"></span>
@@ -58,10 +57,10 @@
     <pre id="errorBox" class="mono" style="white-space:pre-wrap;color:#b30000;margin-top:8px;"></pre>
   </div>
 
-  <!-- REPORT FILTER (scaffold) -->
+  <!-- REPORT FILTER -->
   <div class="card">
     <h3>Build Report (08:00 → next day 07:59)</h3>
-    <form id="filterForm" class="row" onsubmit="event.preventDefault(); alert('Reporting logic can be added here.');">
+    <form id="filterForm" class="row">
       <div>
         <label>From Date</label>
         <input type="date" id="fromDate" required />
@@ -73,15 +72,101 @@
       <div style="align-self:flex-end">
         <button type="submit">Filter</button>
       </div>
+      <div style="align-self:flex-end">
+        <button id="btnRefresh" type="button">Refresh</button>
+      </div>
     </form>
     <div class="row" style="margin-top:6px">
       <span class="muted">Only transactions with <strong>Transaction Amount = 15</strong> are considered for compensation logic.</span>
     </div>
   </div>
 
+  <!-- SUMMARY -->
+  <div id="summaryWrap" class="card" style="display:none">
+    <div class="summary">
+      <div class="box"><div class="muted">Period</div><div id="sum_period" style="font-weight:700">—</div></div>
+      <div class="box"><div class="muted">Total Single Journeys</div><div id="sum_total_single" style="font-weight:700">0</div></div>
+      <div class="box"><div class="muted">Single Fare (B)</div><div id="sum_single_fare" style="font-weight:700">110</div></div>
+      <div class="box"><div class="muted">Total Return Journeys</div><div id="sum_total_return" style="font-weight:700">0</div></div>
+      <div class="box"><div class="muted">Return Fare (D)</div><div id="sum_return_fare" style="font-weight:700">55</div></div>
+      <div class="box"><div class="muted">Total Compensation</div><div id="sum_total_comp" style="font-weight:700">0</div></div>
+      <div class="box"><div class="muted">Omitted Transactions (3rd+)</div><div id="sum_omitted" style="font-weight:700">0</div></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnExportExcel" style="background:#28a745">Export to Excel</button>
+      <button id="btnPrint" style="background:#6c757d">Export to PDF (Print)</button>
+      <span id="rowCount" class="muted" style="margin-left:10px"></span>
+    </div>
+  </div>
+
+  <!-- DAILY -->
+  <div id="dailyWrap" class="card" style="display:none">
+    <h3>Daily Summary</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Period</th>
+          <th>Total Annual Pass Transactions</th>
+          <th>Total Qualified Transactions</th>
+          <th>Total Single Journeys</th>
+          <th>Total Return Journeys</th>
+          <th>Total Compensation</th>
+          <th>Omitted Transactions</th>
+        </tr>
+      </thead>
+      <tbody id="dailyTbody"></tbody>
+      <tfoot>
+        <tr style="background:#ffc107;font-weight:700">
+          <td id="tot_period">TOTAL</td>
+          <td id="tot_total_txn">0</td>
+          <td id="tot_qualified_txn">0</td>
+          <td id="tot_total_single">0</td>
+          <td id="tot_total_return">0</td>
+          <td id="tot_compensation">0</td>
+          <td id="tot_omitted">0</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <!-- KEPT -->
+  <div id="keptWrap" class="card" style="display:none">
+    <h3>Kept Transactions (First 2 per Vehicle per Op-Day)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Date & Time</th>
+          <th>Vehicle No</th>
+          <th>Vehicle Type</th>
+          <th>Amount</th>
+          <th>Journey Type</th>
+        </tr>
+      </thead>
+      <tbody id="keptTbody"></tbody>
+    </table>
+  </div>
+
+  <!-- OMITTED -->
+  <div id="omitWrap" class="card" style="display:none">
+    <h3>Omitted Transactions (3rd and after)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Date & Time</th>
+          <th>Vehicle No</th>
+          <th>Vehicle Type</th>
+          <th>Amount</th>
+          <th>Txn No</th>
+        </tr>
+      </thead>
+      <tbody id="omitTbody"></tbody>
+    </table>
+  </div>
+
   <!-- libs -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
 
   <script>
     // 🔗 Supabase credentials (auto-connect)
@@ -89,7 +174,11 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4Y2JkcmtoaG9xcWhvY21ydGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5NjIxMDcsImV4cCI6MjA3MjUzODEwN30.ufOrUdyi307pqmZdH5AS56UGmMti8n_2BW8YHK-2rk4";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // ✅ CSV header mapping -> DB columns (snake_case)
+    // fares
+    const SINGLE_FARE = 110.0;
+    const RETURN_FARE = 55.0;
+
+    // headers mapping
     const HEADER_MAP = {
       "Entry Plaza ID": "entry_plaza_id",
       "Entry Lane ID": "entry_lane_id",
@@ -98,40 +187,39 @@
       "Tag ID": "tag_id",
       "Vehicle Registration Number": "vehicle_registration_number",
       "Plaza Transaction ID": "plaza_transaction_id",
-      "CCH Transaction ID": "cch_transaction_id",   // UNIQUE constraint / onConflict
+      "CCH Transaction ID": "cch_transaction_id",
       "AVC Class": "avc_class",
       "Mapper Vehicle Class": "mapper_vehicle_class",
-      "Reader Read Time": "reader_read_time",             // timestamptz
-      "Transaction Received Time": "transaction_received_time", // timestamptz
-      "Transaction Processed Time": "transaction_processed_time", // timestamptz
-      "Transaction Amount": "transaction_amount",         // numeric
-      "Accepted Amount": "accepted_amount",               // numeric
+      "Reader Read Time": "reader_read_time",
+      "Transaction Received Time": "transaction_received_time",
+      "Transaction Processed Time": "transaction_processed_time",
+      "Transaction Amount": "transaction_amount",
+      "Accepted Amount": "accepted_amount",
       "Transaction Status": "transaction_status",
       "Reason Code": "reason_code",
       "Fare Type": "fare_type",
-      "Chargeback Raised?": "chargeback_raised",          // boolean
-      "Chargeback Amount Accepted": "chargeback_amount_accepted", // numeric
-      "Chargeback Settlement Date": "chargeback_settlement_date", // timestamptz
-      "Adjustment Raised": "adjustment_raised",           // boolean
-      "Adjustment Amount Accepted": "adjustment_amount_accepted", // numeric
-      "Adjustment Settlement Date": "adjustment_settlement_date", // timestamptz
+      "Chargeback Raised?": "chargeback_raised",
+      "Chargeback Amount Accepted": "chargeback_amount_accepted",
+      "Chargeback Settlement Date": "chargeback_settlement_date",
+      "Adjustment Raised": "adjustment_raised",
+      "Adjustment Amount Accepted": "adjustment_amount_accepted",
+      "Adjustment Settlement Date": "adjustment_settlement_date",
       "Remarks": "remarks"
     };
 
-    // 🔧 Helpers: date, boolean, number normalization
+    // helpers
+    const rupee = n => '₹' + Number(n||0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    const ymd = d => d.toISOString().slice(0,10);
+
     function toISO(s){
       if (s == null || s === "") return null;
       const str = String(s).trim();
-
-      // Handle DD/MM/YYYY HH:mm[:ss]
       const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
       if (m){
         const [_, dd, MM, yyyy, hh='00', mm='00', ss='00'] = m;
         const d = new Date(`${yyyy}-${MM.padStart(2,'0')}-${dd.padStart(2,'0')}T${hh.padStart(2,'0')}:${mm}:${ss}`);
         return isNaN(d) ? null : d.toISOString();
       }
-
-      // Try native parse
       const d = new Date(str);
       return isNaN(d) ? null : d.toISOString();
     }
@@ -150,14 +238,27 @@
       return isNaN(n) ? null : n;
     }
 
-    // 🟢 CSV upload with UPSERT on cch_transaction_id
+    function opDayLabelFor(ts){
+      const d = new Date(ts);
+      const eight = new Date(d); eight.setHours(8,0,0,0);
+      if (d < eight) { const prev = new Date(d); prev.setDate(prev.getDate()-1); prev.setHours(0,0,0,0); return ymd(prev); }
+      const cur = new Date(d); cur.setHours(0,0,0,0); return ymd(cur);
+    }
+
+    function opDayWindowFor(dateYmd){
+      const base = new Date(dateYmd + 'T00:00:00');
+      const start = new Date(base); start.setHours(8,0,0,0);
+      const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999);
+      return { start, end };
+    }
+
+    // CSV upload with UPSERT (ignore duplicates)
     document.getElementById('btnUpload').onclick = async () => {
       const file = document.getElementById('csvFile').files[0];
       const delim = document.getElementById('csvDelimiter').value;
       const info = document.getElementById('uploadInfo');
       const errBox = document.getElementById('errorBox');
-      errBox.textContent = "";
-      info.textContent = "";
+      errBox.textContent = ""; info.textContent = "";
 
       if(!file){ alert('Choose a CSV file'); return; }
 
@@ -170,15 +271,13 @@
           const rows = res.data;
           if(!rows.length){ info.textContent = 'No rows found.'; return; }
 
-          // Validate required key
           if (!('CCH Transaction ID' in rows[0])) {
             info.textContent = 'Missing required header: "CCH Transaction ID".';
             errBox.textContent = 'Ensure your CSV column header exactly matches: CCH Transaction ID';
             return;
           }
 
-          // Map & normalize types
-          const mapped = rows.map((r, idx) => {
+          const mapped = rows.map(r => {
             const obj = {};
             for (const [csvKey, dbKey] of Object.entries(HEADER_MAP)) {
               let val = r[csvKey];
@@ -194,7 +293,6 @@
               } else if (dbKey === 'vehicle_registration_number') {
                 val = (val ?? '').toString().trim().toUpperCase() || null;
               } else {
-                // plain text
                 val = (val === '' ? null : val);
               }
               obj[dbKey] = val;
@@ -202,7 +300,6 @@
             return obj;
           });
 
-          // Chunked upsert
           const chunkSize = 500;
           let ok = 0, failedBatches = 0;
           info.textContent = `Uploading... (0/${mapped.length})`;
@@ -212,7 +309,7 @@
 
             const { error } = await supabase
               .from('pass_transactions')
-              .upsert(part, { onConflict: 'cch_transaction_id' }); // ← v2 expects a string here
+              .upsert(part, { onConflict: 'cch_transaction_id', ignoreDuplicates: true });
 
             if (error) {
               console.error('Supabase upsert error:', error);
@@ -238,21 +335,191 @@
       });
     };
 
-    // 🔎 Quick sanity check button: count rows with Transaction Amount = 15
-    document.getElementById('btnCount').onclick = async () => {
+    // REPORT
+    document.getElementById('filterForm').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const from = document.getElementById('fromDate').value;
+      const to = document.getElementById('toDate').value;
+      if(!from || !to){ alert('Select dates'); return; }
+
+      const { start: globalStart } = opDayWindowFor(from);
+      const { end: globalEnd } = opDayWindowFor(to);
+
       const { data, error } = await supabase
         .from('pass_transactions')
-        .select('cch_transaction_id', { count: 'exact', head: true })
-        .eq('transaction_amount', 15);
+        .select('vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount')
+        .gte('transaction_processed_time', globalStart.toISOString())
+        .lte('transaction_processed_time', globalEnd.toISOString())
+        .eq('transaction_amount', 15)
+        .order('vehicle_registration_number', { ascending: true })
+        .order('transaction_processed_time', { ascending: true });
 
-      const info = document.getElementById('uploadInfo');
-      const errBox = document.getElementById('errorBox');
-      if (error) {
-        errBox.textContent = 'Count failed: ' + error.message;
-      } else {
-        info.textContent = `Rows with Transaction Amount = 15: ${data?.length ?? 0} (count shows in network headers, open DevTools > Network if needed)`;
+      if(error){ alert('Fetch failed: ' + error.message); return; }
+
+      const byOp = new Map();
+      for(const r of data){
+        const lbl = opDayLabelFor(r.transaction_processed_time);
+        if(!byOp.has(lbl)) byOp.set(lbl, []);
+        byOp.get(lbl).push(r);
       }
+
+      const labels = [];
+      {
+        const d = new Date(from + 'T00:00:00');
+        const toD = new Date(to + 'T00:00:00');
+        while(d <= toD){ labels.push(ymd(d)); d.setDate(d.getDate()+1); }
+      }
+
+      const keptRows = [];
+      const omittedRows = [];
+      const dailyRows = [];
+
+      for(const lbl of labels){
+        const rows = (byOp.get(lbl) || []);
+        let currentVRN = null, count = 0;
+        let total_txn = rows.length;
+        let qualified=0, singles=0, returns=0, omitted=0;
+
+        const nextDay = new Date(lbl + 'T00:00:00'); nextDay.setDate(nextDay.getDate()+1);
+        const periodStr = `${lbl} 08:00:00 to ${ymd(nextDay)} 07:59:59`;
+
+        for(const r of rows){
+          if(r.vehicle_registration_number !== currentVRN){
+            currentVRN = r.vehicle_registration_number; count = 0;
+          }
+          count += 1;
+          if(count <= 2){
+            qualified++;
+            const journey = (count % 2 === 1) ? 'Single Journey' : 'Return Journey';
+            if(journey === 'Single Journey') singles++; else returns++;
+            keptRows.push({
+              TransactionProcessedTime: r.transaction_processed_time,
+              VehicleRegistrationNumber: r.vehicle_registration_number,
+              MapperVehicleClass: r.mapper_vehicle_class,
+              TransactionAmount: r.transaction_amount,
+              Journey_Type: journey
+            });
+          }else{
+            omitted++;
+            omittedRows.push({
+              TransactionProcessedTime: r.transaction_processed_time,
+              VehicleRegistrationNumber: r.vehicle_registration_number,
+              MapperVehicleClass: r.mapper_vehicle_class,
+              TransactionAmount: r.transaction_amount,
+              txn_no: count
+            });
+          }
+        }
+        const comp = singles*SINGLE_FARE + returns*RETURN_FARE;
+        dailyRows.push({
+          period: periodStr,
+          total_txn, qualified_txn: qualified,
+          total_single: singles, total_return: returns,
+          compensation: comp, omitted
+        });
+      }
+
+      const tot = {
+        period:'TOTAL',
+        total_txn: dailyRows.reduce((a,b)=>a+b.total_txn,0),
+        qualified_txn: dailyRows.reduce((a,b)=>a+b.qualified_txn,0),
+        total_single: dailyRows.reduce((a,b)=>a+b.total_single,0),
+        total_return: dailyRows.reduce((a,b)=>a+b.total_return,0),
+        compensation: dailyRows.reduce((a,b)=>a+b.compensation,0),
+        omitted: dailyRows.reduce((a,b)=>a+b.omitted,0),
+      };
+      const summary = {
+        period: `${from} to ${to}`,
+        total_single: tot.total_single,
+        single_fare: SINGLE_FARE,
+        total_return: tot.total_return,
+        return_fare: RETURN_FARE,
+        total_comp: tot.compensation,
+        omitted: tot.omitted
+      };
+
+      // Render summary
+      document.getElementById('sum_period').textContent = summary.period;
+      document.getElementById('sum_total_single').textContent = summary.total_single;
+      document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
+      document.getElementById('sum_total_return').textContent = summary.total_return;
+      document.getElementById('sum_return_fare').textContent = RETURN_FARE;
+      document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
+      document.getElementById('sum_omitted').textContent = summary.omitted;
+      document.getElementById('summaryWrap').style.display = 'block';
+      document.getElementById('rowCount').textContent = `Rows considered: ${data.length}`;
+
+      // Daily table
+      const tb = document.getElementById('dailyTbody');
+      tb.innerHTML = dailyRows.map(r=>`
+        <tr>
+          <td>${r.period}</td>
+          <td>${r.total_txn}</td>
+          <td>${r.qualified_txn}</td>
+          <td>${r.total_single}</td>
+          <td>${r.total_return}</td>
+          <td>${rupee(r.compensation)}</td>
+          <td>${r.omitted}</td>
+        </tr>
+      `).join('');
+      document.getElementById('tot_total_txn').textContent = tot.total_txn;
+      document.getElementById('tot_qualified_txn').textContent = tot.qualified_txn;
+      document.getElementById('tot_total_single').textContent = tot.total_single;
+      document.getElementById('tot_total_return').textContent = tot.total_return;
+      document.getElementById('tot_compensation').textContent = rupee(tot.compensation);
+      document.getElementById('tot_omitted').textContent = tot.omitted;
+      document.getElementById('dailyWrap').style.display = 'block';
+
+      // Kept
+      const keptTb = document.getElementById('keptTbody');
+      keptTb.innerHTML = keptRows.map(r=>`
+        <tr>
+          <td>${new Date(r.TransactionProcessedTime).toLocaleString()}</td>
+          <td>${r.VehicleRegistrationNumber}</td>
+          <td>${r.MapperVehicleClass ?? ''}</td>
+          <td>${r.TransactionAmount}</td>
+          <td>${r.Journey_Type}</td>
+        </tr>
+      `).join('');
+      document.getElementById('keptWrap').style.display = keptRows.length ? 'block':'none';
+
+      // Omitted
+      const omTb = document.getElementById('omitTbody');
+      omTb.innerHTML = omittedRows.map(r=>`
+        <tr>
+          <td>${new Date(r.TransactionProcessedTime).toLocaleString()}</td>
+          <td>${r.VehicleRegistrationNumber}</td>
+          <td>${r.MapperVehicleClass ?? ''}</td>
+          <td>${r.TransactionAmount}</td>
+          <td>${r.txn_no}</td>
+        </tr>
+      `).join('');
+      document.getElementById('omitWrap').style.display = omittedRows.length ? 'block':'none';
+
+      // store for export
+      window.__LAST = { summary, dailyRows, tot };
+    });
+
+    document.getElementById('btnRefresh').onclick = () => {
+      const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
     };
+
+    // EXCEL export
+    document.getElementById('btnExportExcel').onclick = () => {
+      const L = window.__LAST;
+      if(!L){ alert('Run a report first.'); return; }
+      const wb = XLSX.utils.book_new();
+      const ws1 = XLSX.utils.json_to_sheet([L.summary]);
+      XLSX.utils.book_append_sheet(wb, ws1, 'Overall Summary');
+
+      const ws2 = XLSX.utils.json_to_sheet([...L.dailyRows, L.tot]);
+      XLSX.utils.book_append_sheet(wb, ws2, 'Daily Summary');
+
+      XLSX.writeFile(wb, 'summary.xlsx');
+    };
+
+    // Print -> PDF
+    document.getElementById('btnPrint').onclick = () => window.print();
   </script>
 </body>
 </html>
