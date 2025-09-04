@@ -178,7 +178,7 @@
     const SINGLE_FARE = 110.0;
     const RETURN_FARE = 55.0;
 
-    // headers mapping
+    // CSV -> DB column map
     const HEADER_MAP = {
       "Entry Plaza ID": "entry_plaza_id",
       "Entry Lane ID": "entry_lane_id",
@@ -262,7 +262,43 @@
       return { start, end };
     }
 
+    // =========================
+    // PAGINATED FETCH (fix 1000-row cap)
+    // =========================
+    async function fetchAllPassTxns(startISO, endISO) {
+      const pageSize = 1000;  // PostgREST default page size
+      let from = 0;
+      let all = [];
+      let totalCount = null;
+
+      while (true) {
+        const { data, error, count } = await supabase
+          .from('pass_transactions')
+          .select(
+            'vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount',
+            { count: 'exact' }
+          )
+          .gte('transaction_processed_time', startISO)
+          .lte('transaction_processed_time', endISO)
+          .eq('transaction_amount', 15)
+          .order('transaction_processed_time', { ascending: true })
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+
+        if (totalCount === null && typeof count === 'number') totalCount = count;
+        if (data && data.length) all = all.concat(data);
+
+        if (!data || data.length < pageSize) break; // last page
+        from += pageSize;
+      }
+
+      return { rows: all, count: totalCount ?? all.length };
+    }
+
+    // =========================
     // CSV upload with UPSERT (ignore duplicates)
+    // =========================
     document.getElementById('btnUpload').onclick = async () => {
       const file = document.getElementById('csvFile').files[0];
       const delim = document.getElementById('csvDelimiter').value;
@@ -324,7 +360,7 @@
             if (error) {
               console.error('Supabase upsert error:', error);
               failedBatches++;
-              errBox.textContent += `Batch ${i/chunkSize + 1}: ${error.message}\n`;
+              document.getElementById('errorBox').textContent += `Batch ${i/chunkSize + 1}: ${error.message}\n`;
             } else {
               ok += part.length;
             }
@@ -345,7 +381,9 @@
       });
     };
 
+    // =========================
     // REPORT
+    // =========================
     document.getElementById('filterForm').addEventListener('submit', async (e)=>{
       e.preventDefault();
       const from = document.getElementById('fromDate').value;
@@ -356,15 +394,15 @@
       const { start: globalStart } = opDayWindowFor(from);
       const { end: globalEnd } = opDayWindowFor(to);
 
-      const { data, error } = await supabase
-        .from('pass_transactions')
-        .select('vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount')
-        .gte('transaction_processed_time', globalStart.toISOString())
-        .lte('transaction_processed_time', globalEnd.toISOString())
-        .eq('transaction_amount', 15)
-        .order('transaction_processed_time', { ascending: true }); // time order is enough
-
-      if(error){ alert('Fetch failed: ' + error.message); return; }
+      let data, totalCount;
+      try {
+        const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
+        data = res.rows;
+        totalCount = res.count;
+      } catch (error) {
+        alert('Fetch failed: ' + error.message);
+        return;
+      }
 
       // Group into operational days using LOCAL key (ts - 8h)
       const byOp = new Map();
@@ -392,7 +430,7 @@
       for (const key of labels) {
         const rows = (byOp.get(key) || []).slice();
 
-        // already overall-time-ordered, but keep it safe:
+        // process in chronological order
         rows.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
 
         const perVeh = new Map();
@@ -472,7 +510,7 @@
       document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
       document.getElementById('sum_omitted').textContent = summary.omitted;
       document.getElementById('summaryWrap').style.display = 'block';
-      document.getElementById('rowCount').textContent = `Rows considered: ${data.length}`;
+      document.getElementById('rowCount').textContent = `Rows considered: ${data.length} of ${totalCount}`;
 
       // Daily table
       const tb = document.getElementById('dailyTbody');
