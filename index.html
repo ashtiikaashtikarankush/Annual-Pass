@@ -5,11 +5,8 @@
   <title>Annual Pass Transactions - Mundiyar Toll</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    /* Center whole page content */
     .container { max-width: 1200px; margin: 0 auto; }
-
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f7fa; }
-    /* Center the main page title */
     .page-title { color:#333; text-align:center; margin: 0 0 16px 0; }
 
     h3{ margin-top:28px; }
@@ -31,7 +28,7 @@
     .bad{ color:#b30000; font-weight:600; }
     .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
 
-    /* Widen the first column ("Period") in Daily Summary */
+    /* Widen the first column ("Period") in Daily Summary (web) */
     #dailyWrap table th:first-child,
     #dailyWrap table td:first-child {
       width: 420px;
@@ -107,7 +104,7 @@
     <!-- DAILY -->
     <div id="dailyWrap" class="card" style="display:none">
       <h3>Daily Summary</h3>
-      <table>
+      <table id="dailyTable">
         <thead>
           <tr>
             <th>Period</th>
@@ -137,7 +134,7 @@
     <!-- KEPT -->
     <div id="keptWrap" class="card" style="display:none">
       <h3>Transactions (First 2 per Vehicle in 24hr.)</h3>
-      <table>
+      <table id="keptTable">
         <thead>
           <tr>
             <th>Date & Time</th>
@@ -154,7 +151,7 @@
     <!-- OMITTED -->
     <div id="omitWrap" class="card" style="display:none">
       <h3>Omitted Transactions (3rd and after)</h3>
-      <table>
+      <table id="omitTable">
         <thead>
           <tr>
             <th>Date & Time</th>
@@ -174,7 +171,10 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
 
     <script>
-      // 🔗 Supabase credentials (auto-connect)
+      // ===== util: safe console helper =====
+      const log = (...a) => { try { console.log(...a); } catch(_){} };
+
+      // 🔗 Supabase
       const SUPABASE_URL = "https://pxcbdrkhhoqqhocmrtgj.supabase.co";
       const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4Y2JkcmtoaG9xcWhvY21ydGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5NjIxMDcsImV4cCI6MjA3MjUzODEwN30.ufOrUdyi307pqmZdH5AS56UGmMti8n_2BW8YHK-2rk4";
       const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -183,7 +183,6 @@
       const SINGLE_FARE = 110.0;
       const RETURN_FARE = 55.0;
 
-      // CSV -> DB column map
       const HEADER_MAP = {
         "Entry Plaza ID": "entry_plaza_id",
         "Entry Lane ID": "entry_lane_id",
@@ -212,10 +211,8 @@
         "Remarks": "remarks"
       };
 
-      // helpers
       const rupee = n => '₹' + Number(n||0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
-      // Local-only YYYY-MM-DD (no UTC conversion)
       const ymd = (d) => {
         const y = d.getFullYear();
         const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -235,7 +232,6 @@
         const d = new Date(str);
         return isNaN(d) ? null : d.toISOString();
       }
-
       function toBool(s){
         if (s == null) return null;
         const v = String(s).trim().toLowerCase();
@@ -243,36 +239,28 @@
         if (["no","n","false","0",""].includes(v)) return false;
         return null;
       }
-
       function toNum(s){
         if (s == null || s === "") return null;
         const n = Number(String(s).replace(/,/g,""));
         return isNaN(n) ? null : n;
       }
 
-      // Operational day key = LOCAL DATE of (timestamp - 8 hours)
       function opDayKey(ts){
-        const d = new Date(ts); // DB ISO -> local instant
-        const shifted = new Date(d.getTime() - 8*60*60*1000); // move back 8h
+        const d = new Date(ts);
+        const shifted = new Date(d.getTime() - 8*60*60*1000);
         shifted.setHours(0,0,0,0);
-        return ymd(shifted); // local calendar day key
+        return ymd(shifted);
       }
-
-      // Build query window (local → UTC for DB)
       function opDayWindowFor(dateYmd){
-        const base = new Date(dateYmd + 'T00:00:00'); // local midnight
-        const start = new Date(base); start.setHours(8,0,0,0);  // 08:00 local
-        const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999); // next day 07:59:59.999 local
+        const base = new Date(dateYmd + 'T00:00:00');
+        const start = new Date(base); start.setHours(8,0,0,0);
+        const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999);
         return { start, end };
       }
 
-      // PAGINATED FETCH (fix 1000-row cap)
       async function fetchAllPassTxns(startISO, endISO) {
-        const pageSize = 1000;  // PostgREST default page size
-        let from = 0;
-        let all = [];
-        let totalCount = null;
-
+        const pageSize = 1000;
+        let from = 0, all = [], totalCount = null;
         while (true) {
           const { data, error, count } = await supabase
             .from('pass_transactions')
@@ -287,44 +275,35 @@
             .range(from, from + pageSize - 1);
 
           if (error) throw error;
-
           if (totalCount === null && typeof count === 'number') totalCount = count;
           if (data && data.length) all = all.concat(data);
-
-          if (!data || data.length < pageSize) break; // last page
+          if (!data || data.length < pageSize) break;
           from += pageSize;
         }
-
         return { rows: all, count: totalCount ?? all.length };
       }
 
-      // =========================
-      // CSV upload with UPSERT (ignore duplicates)
-      // =========================
+      // CSV upload
       document.getElementById('btnUpload').onclick = async () => {
         const file = document.getElementById('csvFile').files[0];
         const delim = document.getElementById('csvDelimiter').value;
         const info = document.getElementById('uploadInfo');
         const errBox = document.getElementById('errorBox');
         errBox.textContent = ""; info.textContent = "";
-
         if(!file){ alert('Choose a CSV file'); return; }
 
         info.textContent = 'Parsing CSV...';
         Papa.parse(file, {
-          header: true,
-          skipEmptyLines: true,
+          header: true, skipEmptyLines: true,
           delimiter: (delim === '\\t' ? '\t' : delim),
           complete: async (res) => {
             const rows = res.data;
             if(!rows.length){ info.textContent = 'No rows found.'; return; }
-
             if (!('CCH Transaction ID' in rows[0])) {
               info.textContent = 'Missing required header: "CCH Transaction ID".';
               errBox.textContent = 'Ensure your CSV column header exactly matches: CCH Transaction ID';
               return;
             }
-
             const mapped = rows.map(r => {
               const obj = {};
               for (const [csvKey, dbKey] of Object.entries(HEADER_MAP)) {
@@ -354,27 +333,19 @@
 
             for (let i = 0; i < mapped.length; i += chunkSize) {
               const part = mapped.slice(i, i + chunkSize);
-
               const { error } = await supabase
                 .from('pass_transactions')
                 .upsert(part, { onConflict: 'cch_transaction_id', ignoreDuplicates: true });
 
               if (error) {
-                console.error('Supabase upsert error:', error);
                 failedBatches++;
-                document.getElementById('errorBox').textContent += `Batch ${i/chunkSize + 1}: ${error.message}\n`;
-              } else {
-                ok += part.length;
-              }
+                errBox.textContent += `Batch ${i/chunkSize + 1}: ${error.message}\n`;
+              } else { ok += part.length; }
               info.textContent = `Uploaded ${ok}/${mapped.length}. ${failedBatches ? 'Failed batches: ' + failedBatches : ''}`;
             }
 
-            if (!failedBatches) {
-              info.className = 'success';
-              info.textContent += '  ✓ All good.';
-            } else {
-              info.className = 'warn';
-            }
+            info.className = failedBatches ? 'warn' : 'success';
+            if (!failedBatches) info.textContent += '  ✓ All good.';
           },
           error: (e) => {
             info.textContent = 'CSV parse error.';
@@ -383,30 +354,22 @@
         });
       };
 
-      // =========================
       // REPORT
-      // =========================
       document.getElementById('filterForm').addEventListener('submit', async (e)=>{
         e.preventDefault();
         const from = document.getElementById('fromDate').value;
         const to = document.getElementById('toDate').value;
         if(!from || !to){ alert('Select dates'); return; }
 
-        // Build UTC window for DB query (correct)
         const { start: globalStart } = opDayWindowFor(from);
         const { end: globalEnd } = opDayWindowFor(to);
 
         let data, totalCount;
         try {
           const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
-          data = res.rows;
-          totalCount = res.count;
-        } catch (error) {
-          alert('Fetch failed: ' + error.message);
-          return;
-        }
+          data = res.rows; totalCount = res.count;
+        } catch (error) { alert('Fetch failed: ' + error.message); return; }
 
-        // Group into operational days using LOCAL key (ts - 8h)
         const byOp = new Map();
         for(const r of data){
           const key = opDayKey(r.transaction_processed_time);
@@ -414,38 +377,23 @@
           byOp.get(key).push(r);
         }
 
-        // Build labels in LOCAL time for the selected range
         const labels = [];
-        {
-          const d = new Date(from + 'T00:00:00');  // local midnight
-          const toD = new Date(to + 'T00:00:00');  // local midnight
-          while(d <= toD){
-            labels.push(ymd(d));
-            d.setDate(d.getDate()+1);
-          }
+        { const d = new Date(from + 'T00:00:00');
+          const toD = new Date(to + 'T00:00:00');
+          while(d <= toD){ labels.push(ymd(d)); d.setDate(d.getDate()+1); }
         }
 
-        const keptRows = [];
-        const omittedRows = [];
-        const dailyRows = [];
-
+        const keptRows = [], omittedRows = [], dailyRows = [];
         for (const key of labels) {
           const rows = (byOp.get(key) || []).slice();
-
-          // process in chronological order
-          rows.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
-
+          rows.sort((a,b)=> new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
           const perVeh = new Map();
-          let total_txn = rows.length;
-          let qualified = 0, singles = 0, returns = 0, omitted = 0;
-
+          let total_txn = rows.length, qualified = 0, singles = 0, returns = 0, omitted = 0;
           const periodStr = `${key}`;
 
           for (const r of rows) {
             const vrn = (r.vehicle_registration_number || '').toString();
-            const now = (perVeh.get(vrn) || 0) + 1;
-            perVeh.set(vrn, now);
-
+            const now = (perVeh.get(vrn) || 0) + 1; perVeh.set(vrn, now);
             if (now <= 2) {
               qualified++;
               const journey = (now % 2 === 1) ? 'Single Journey' : 'Return Journey';
@@ -472,12 +420,9 @@
           const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
           dailyRows.push({
             period: periodStr,
-            total_txn,
-            qualified_txn: qualified,
-            total_single: singles,
-            total_return: returns,
-            compensation: comp,
-            omitted
+            total_txn, qualified_txn: qualified,
+            total_single: singles, total_return: returns,
+            compensation: comp, omitted
           });
         }
 
@@ -558,7 +503,7 @@
         `).join('');
         document.getElementById('omitWrap').style.display = omittedRows.length ? 'block':'none';
 
-        // store for export (include everything shown on screen)
+        // keep for export
         window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
       });
 
@@ -566,7 +511,7 @@
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
       };
 
-      // helper: format a timestamp to "YYYY-MM-DD HH:mm:ss" in LOCAL time
+      // helper: format a timestamp to local "YYYY-MM-DD HH:mm:ss"
       function fmtLocal(ts) {
         const d = new Date(ts);
         const y = d.getFullYear();
@@ -578,11 +523,10 @@
         return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
       }
 
-      // === Excel helpers: set number format for specific header columns ===
+      // number format helper
       function setNumFmtByHeader(ws, headerText, fmt) {
         if (!ws['!ref']) return;
         const range = XLSX.utils.decode_range(ws['!ref']);
-        // find header column index by matching headerText in first row
         let colIndex = -1;
         for (let c = range.s.c; c <= range.e.c; c++) {
           const addr = XLSX.utils.encode_cell({ r: range.s.r, c });
@@ -590,102 +534,121 @@
           if (cell && (cell.v === headerText)) { colIndex = c; break; }
         }
         if (colIndex === -1) return;
-
-        // apply format to all rows below header
         for (let r = range.s.r + 1; r <= range.e.r; r++) {
           const addr = XLSX.utils.encode_cell({ r, c: colIndex });
-          const cell = ws[addr];
-          if (!cell) continue;
-          // ensure numeric type
+          const cell = ws[addr]; if (!cell) continue;
           const num = typeof cell.v === 'number' ? cell.v : Number(cell.v);
-          if (!isNaN(num)) {
-            cell.v = num;
-            cell.t = 'n';
-            cell.z = fmt; // e.g., '[$₹-400]#,##0.00'
-          }
+          if (!isNaN(num)) { cell.v = num; cell.t = 'n'; cell.z = fmt; }
         }
       }
 
-      // EXCEL export (mirror web view: 4 sheets + currency formats)
+      // ensure XLSX loaded
+      function ensureXLSX() {
+        if (!window.XLSX) {
+          alert('Excel library failed to load. Check network / adblock and try again.');
+          return false;
+        }
+        return true;
+      }
+      // write file with best-available API
+      function writeWorkbook(wb, name) {
+        const opts = { compression: true };
+        if (typeof XLSX.writeFileXLSX === 'function') return XLSX.writeFileXLSX(wb, name, opts);
+        return XLSX.writeFile(wb, name, opts);
+      }
+
+      // EXCEL export (robust + fallback to DOM tables)
       document.getElementById('btnExportExcel').onclick = () => {
-        const L = window.__LAST;
-        if(!L){ alert('Run a report first.'); return; }
+        try {
+          if (!ensureXLSX()) return;
 
-        const wb = XLSX.utils.book_new();
+          const L = window.__LAST;
+          const wb = XLSX.utils.book_new();
 
-        // Overall Summary
-        const summaryRows = [{
-          "Period": L.summary.period,
-          "Total Single Journeys": L.summary.total_single,
-          "Single Fare (B)": L.summary.single_fare,
-          "Total Return Journeys": L.summary.total_return,
-          "Return Fare (D)": L.summary.return_fare,
-          "Total Compensation": L.summary.total_comp,
-          "Omitted Transactions (3rd+)": L.summary.omitted
-        }];
-        const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-        // format currency for Total Compensation
-        setNumFmtByHeader(wsSummary, "Total Compensation", '[$₹-400]#,##0.00');
-        XLSX.utils.book_append_sheet(wb, wsSummary, 'Overall Summary');
+          if (L && L.summary && L.dailyRows) {
+            // Overall Summary
+            const summaryRows = [{
+              "Period": L.summary.period,
+              "Total Single Journeys": L.summary.total_single,
+              "Single Fare (B)": L.summary.single_fare,
+              "Total Return Journeys": L.summary.total_return,
+              "Return Fare (D)": L.summary.return_fare,
+              "Total Compensation": L.summary.total_comp,
+              "Omitted Transactions (3rd+)": L.summary.omitted
+            }];
+            const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+            setNumFmtByHeader(wsSummary, "Total Compensation", '[$₹-400]#,##0.00');
+            XLSX.utils.book_append_sheet(wb, wsSummary, 'Overall Summary');
 
-        // Daily Summary (rows + TOTAL)
-        const dailyWithTotal = [...L.dailyRows, {
-          period: 'TOTAL',
-          total_txn: L.tot.total_txn,
-          qualified_txn: L.tot.qualified_txn,
-          total_single: L.tot.total_single,
-          total_return: L.tot.total_return,
-          compensation: L.tot.compensation,
-          omitted: L.tot.omitted
-        }];
-        const dailyExport = dailyWithTotal.map(r => ({
-          "Period": r.period,
-          "Total Annual Pass Transactions": r.total_txn,
-          "Total Qualified Transactions": r.qualified_txn,
-          "Total Single Journeys": r.total_single,
-          "Total Return Journeys": r.total_return,
-          "Total Compensation": r.compensation,
-          "Omitted Transactions": r.omitted
-        }));
-        const wsDaily = XLSX.utils.json_to_sheet(dailyExport);
-        wsDaily['!cols'] = [{ wch: 40 }]; // widen Period col
-        // currency format for Total Compensation
-        setNumFmtByHeader(wsDaily, "Total Compensation", '[$₹-400]#,##0.00');
-        XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
+            // Daily Summary (+ total)
+            const dailyWithTotal = [...L.dailyRows, {
+              period: 'TOTAL',
+              total_txn: L.tot.total_txn,
+              qualified_txn: L.tot.qualified_txn,
+              total_single: L.tot.total_single,
+              total_return: L.tot.total_return,
+              compensation: L.tot.compensation,
+              omitted: L.tot.omitted
+            }];
+            const dailyExport = dailyWithTotal.map(r => ({
+              "Period": r.period,
+              "Total Annual Pass Transactions": r.total_txn,
+              "Total Qualified Transactions": r.qualified_txn,
+              "Total Single Journeys": r.total_single,
+              "Total Return Journeys": r.total_return,
+              "Total Compensation": r.compensation,
+              "Omitted Transactions": r.omitted
+            }));
+            const wsDaily = XLSX.utils.json_to_sheet(dailyExport);
+            wsDaily['!cols'] = [{ wch: 40 }];
+            setNumFmtByHeader(wsDaily, "Total Compensation", '[$₹-400]#,##0.00');
+            XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
 
-        // Kept Transactions
-        const keptExport = (L.keptRows || []).map(r => ({
-          "Date & Time": fmtLocal(r.TransactionProcessedTime),
-          "Vehicle No": r.VehicleRegistrationNumber,
-          "Vehicle Type": r.MapperVehicleClass ?? '',
-          "Amount": r.TransactionAmount,
-          "Journey Type": r.Journey_Type
-        }));
-        const wsKept = XLSX.utils.json_to_sheet(keptExport);
-        // currency format for Amount
-        setNumFmtByHeader(wsKept, "Amount", '[$₹-400]#,##0.00');
-        XLSX.utils.book_append_sheet(wb, wsKept, 'Kept Transactions');
+            // Kept
+            const keptExport = (L.keptRows || []).map(r => ({
+              "Date & Time": fmtLocal(r.TransactionProcessedTime),
+              "Vehicle No": r.VehicleRegistrationNumber,
+              "Vehicle Type": r.MapperVehicleClass ?? '',
+              "Amount": r.TransactionAmount,
+              "Journey Type": r.Journey_Type
+            }));
+            const wsKept = XLSX.utils.json_to_sheet(keptExport);
+            setNumFmtByHeader(wsKept, "Amount", '[$₹-400]#,##0.00');
+            XLSX.utils.book_append_sheet(wb, wsKept, 'Kept Transactions');
 
-        // Omitted Transactions
-        const omittedExport = (L.omittedRows || []).map(r => ({
-          "Date & Time": fmtLocal(r.TransactionProcessedTime),
-          "Vehicle No": r.VehicleRegistrationNumber,
-          "Vehicle Type": r.MapperVehicleClass ?? '',
-          "Amount": r.TransactionAmount,
-          "Txn No": r.txn_no
-        }));
-        const wsOmit = XLSX.utils.json_to_sheet(omittedExport);
-        // currency format for Amount
-        setNumFmtByHeader(wsOmit, "Amount", '[$₹-400]#,##0.00');
-        XLSX.utils.book_append_sheet(wb, wsOmit, 'Omitted Transactions');
+            // Omitted
+            const omittedExport = (L.omittedRows || []).map(r => ({
+              "Date & Time": fmtLocal(r.TransactionProcessedTime),
+              "Vehicle No": r.VehicleRegistrationNumber,
+              "Vehicle Type": r.MapperVehicleClass ?? '',
+              "Amount": r.TransactionAmount,
+              "Txn No": r.txn_no
+            }));
+            const wsOmit = XLSX.utils.json_to_sheet(omittedExport);
+            setNumFmtByHeader(wsOmit, "Amount", '[$₹-400]#,##0.00');
+            XLSX.utils.book_append_sheet(wb, wsOmit, 'Omitted Transactions');
+          } else {
+            // 🔁 Fallback: export exactly what’s visible in the DOM tables
+            const wbDaily = XLSX.utils.table_to_book(document.getElementById('dailyTable'), { sheet: "Daily Summary" });
+            const wbKept  = XLSX.utils.table_to_book(document.getElementById('keptTable'),  { sheet: "Kept Transactions" });
+            const wbOmit  = XLSX.utils.table_to_book(document.getElementById('omitTable'),  { sheet: "Omitted Transactions" });
+            // Merge sheets into wb
+            Object.values(wbDaily.Sheets).forEach((_,i)=>{});
+            XLSX.utils.book_append_sheet(wb, wbDaily.Sheets["Daily Summary"], "Daily Summary");
+            if (wbKept.Sheets["Kept Transactions"]) XLSX.utils.book_append_sheet(wb, wbKept.Sheets["Kept Transactions"], "Kept Transactions");
+            if (wbOmit.Sheets["Omitted Transactions"]) XLSX.utils.book_append_sheet(wb, wbOmit.Sheets["Omitted Transactions"], "Omitted Transactions");
+          }
 
-        // write file (with compression for smaller size)
-        XLSX.writeFile(wb, 'summary.xlsx', { compression: true });
+          writeWorkbook(wb, 'summary.xlsx');
+        } catch (err) {
+          log(err);
+          alert('Excel export failed: ' + (err && err.message ? err.message : err));
+        }
       };
 
       // Print -> PDF
       document.getElementById('btnPrint').onclick = () => window.print();
     </script>
-  </div> <!-- /.container -->
+  </div>
 </body>
 </html>
