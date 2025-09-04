@@ -95,7 +95,7 @@
         <div class="box"><div class="muted">Omitted Transactions (3rd+)</div><div id="sum_omitted" style="font-weight:700">0</div></div>
       </div>
       <div class="row" style="margin-top:10px">
-        <button id="btnExportCSV" style="background:#28a745">Export CSV (All)</button>
+        <button id="btnExportExcel" style="background:#28a745">Export to Excel</button>
         <button id="btnPrint" style="background:#6c757d">Export to PDF (Print)</button>
         <span id="rowCount" class="muted" style="margin-left:10px"></span>
       </div>
@@ -282,7 +282,7 @@
         return { rows: all, count: totalCount ?? all.length };
       }
 
-      // CSV upload
+      // CSV upload → DB
       document.getElementById('btnUpload').onclick = async () => {
         const file = document.getElementById('csvFile').files[0];
         const delim = document.getElementById('csvDelimiter').value;
@@ -388,7 +388,6 @@
           rows.sort((a,b)=> new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
           const perVeh = new Map();
           let total_txn = rows.length, qualified = 0, singles = 0, returns = 0, omitted = 0;
-          const periodStr = `${key}`;
 
           for (const r of rows) {
             const vrn = (r.vehicle_registration_number || '').toString();
@@ -418,7 +417,7 @@
 
           const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
           dailyRows.push({
-            period: periodStr,
+            period: key,
             total_txn, qualified_txn: qualified,
             total_single: singles, total_return: returns,
             compensation: comp, omitted
@@ -455,7 +454,7 @@
         document.getElementById('summaryWrap').style.display = 'block';
         document.getElementById('rowCount').textContent = `Rows considered: ${data.length} of ${totalCount}`;
 
-        // Daily table
+        // Daily table (web)
         const tb = document.getElementById('dailyTbody');
         tb.innerHTML = dailyRows.map(r=>`
           <tr>
@@ -510,27 +509,144 @@
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
       };
 
-      // ===== CSV EXPORT =====
-      function csvEscape(val){
-        if (val == null) return '';
-        if (typeof val === 'number') return String(val);
-        const s = String(val);
-        if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
-        return s;
+      // ===== Excel 2003 XML (.xls) generator — NO external libs =====
+      function xmlEsc(s){
+        return String(s ?? '')
+          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
       }
-      function toCSV(rows){
-        if (!rows || !rows.length) return '\uFEFF';
-        const headers = Object.keys(rows[0]);
-        const lines = [];
-        lines.push(headers.join(','));
-        for (const r of rows){
-          lines.push(headers.map(h => csvEscape(r[h])).join(','));
-        }
-        return '\uFEFF' + lines.join('\r\n'); // BOM for Excel UTF-8
+
+      function cell({v=null,type='String',style=null}) {
+        const styleAttr = style ? ` ss:StyleID="${style}"` : '';
+        const value = (v===null || v===undefined) ? '' : v;
+        return `<Cell${styleAttr}><Data ss:Type="${type}">${xmlEsc(value)}</Data></Cell>`;
       }
-      function downloadCSV(filename, rows){
-        const csv = toCSV(rows);
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+
+      function row(cellsHtml){ return `<Row>${cellsHtml}</Row>`; }
+
+      function buildSheet({name, columns, rows, colWidths=[]}) {
+        const cols = (colWidths.length ? colWidths : columns.map(_=>80))
+          .map(w => `<Column ss:Width="${w}"/>`).join('');
+        // header
+        const headerCells = columns.map(col => cell({v: col.header, type:'String', style:'sHead'})).join('');
+        const headerRow = row(headerCells);
+        // data rows
+        const dataRows = rows.map(r => {
+          const cells = columns.map(col => {
+            const val = typeof col.accessor === 'function' ? col.accessor(r) : r[col.accessor];
+            if (col.kind === 'number') return cell({v: (val==null?'':Number(val)), type:'Number', style: col.style||'sNum'});
+            if (col.kind === 'currency') return cell({v: (val==null?'':Number(val)), type:'Number', style: col.style||'sCur'});
+            if (col.kind === 'date') return cell({v: val, type:'String', style: col.style||'sTxt'}); // keeping text display
+            return cell({v: (val==null?'':val), type:'String', style: col.style||'sTxt'});
+          }).join('');
+          return row(cells);
+        }).join('');
+        return `
+          <Worksheet ss:Name="${xmlEsc(name)}">
+            <Table>
+              ${cols}
+              ${headerRow}
+              ${dataRows}
+            </Table>
+          </Worksheet>
+        `;
+      }
+
+      function buildWorkbookXml({summary, dailyRows, tot, keptRows, omittedRows}) {
+        // Styles: header, text, number, currency
+        const styles = `
+          <Styles>
+            <Style ss:ID="sHead">
+              <Font ss:Bold="1"/>
+              <Interior ss:Color="#D9E1F2" ss:Pattern="Solid"/>
+              <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
+              </Borders>
+            </Style>
+            <Style ss:ID="sTxt">
+              <Alignment ss:Vertical="Center"/>
+            </Style>
+            <Style ss:ID="sNum">
+              <NumberFormat ss:Format="#,##0"/>
+            </Style>
+            <Style ss:ID="sCur">
+              <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
+            </Style>
+          </Styles>
+        `;
+
+        // Sheet 1: Overall Summary (single row)
+        const overallCols = [
+          { header:'Period', accessor:r=>r.period, kind:'text' },
+          { header:'Total Single Journeys', accessor:r=>r.total_single, kind:'number' },
+          { header:'Single Fare (B)', accessor:r=>r.single_fare, kind:'currency' },
+          { header:'Total Return Journeys', accessor:r=>r.total_return, kind:'number' },
+          { header:'Return Fare (D)', accessor:r=>r.return_fare, kind:'currency' },
+          { header:'Total Compensation', accessor:r=>r.total_comp, kind:'currency' },
+          { header:'Omitted Transactions (3rd+)', accessor:r=>r.omitted, kind:'number' },
+        ];
+        const overallRows = [summary];
+
+        // Sheet 2: Daily Summary (+ TOTAL)
+        const dailyWithTotal = [...dailyRows, {
+          period: 'TOTAL',
+          total_txn: tot.total_txn,
+          qualified_txn: tot.qualified_txn,
+          total_single: tot.total_single,
+          total_return: tot.total_return,
+          compensation: tot.compensation,
+          omitted: tot.omitted
+        }];
+        const dailyCols = [
+          { header:'Period', accessor:'period', kind:'text' },
+          { header:'Total Annual Pass Transactions', accessor:'total_txn', kind:'number' },
+          { header:'Total Qualified Transactions', accessor:'qualified_txn', kind:'number' },
+          { header:'Total Single Journeys', accessor:'total_single', kind:'number' },
+          { header:'Total Return Journeys', accessor:'total_return', kind:'number' },
+          { header:'Total Compensation', accessor:'compensation', kind:'currency' },
+          { header:'Omitted Transactions', accessor:'omitted', kind:'number' },
+        ];
+        // wider first col for Period
+        const dailyWidths = [260, 140, 140, 140, 140, 160, 150];
+
+        // Sheet 3: Kept Transactions
+        const keptCols = [
+          { header:'Date & Time', accessor:r=>new Date(r.TransactionProcessedTime).toLocaleString(), kind:'text' },
+          { header:'Vehicle No', accessor:'VehicleRegistrationNumber', kind:'text' },
+          { header:'Vehicle Type', accessor:r=> (r.MapperVehicleClass ?? ''), kind:'text' },
+          { header:'Amount', accessor:'TransactionAmount', kind:'currency' },
+          { header:'Journey Type', accessor:'Journey_Type', kind:'text' },
+        ];
+
+        // Sheet 4: Omitted Transactions
+        const omitCols = [
+          { header:'Date & Time', accessor:r=>new Date(r.TransactionProcessedTime).toLocaleString(), kind:'text' },
+          { header:'Vehicle No', accessor:'VehicleRegistrationNumber', kind:'text' },
+          { header:'Vehicle Type', accessor:r=> (r.MapperVehicleClass ?? ''), kind:'text' },
+          { header:'Amount', accessor:'TransactionAmount', kind:'currency' },
+          { header:'Txn No', accessor:'txn_no', kind:'number' },
+        ];
+
+        const xml =
+`<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook
+  xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:html="http://www.w3.org/TR/REC-html40">
+  ${styles}
+  ${buildSheet({ name:'Overall Summary', columns: overallCols, rows: overallRows })}
+  ${buildSheet({ name:'Daily Summary', columns: dailyCols, rows: dailyWithTotal, colWidths: dailyWidths })}
+  ${buildSheet({ name:'Kept Transactions', columns: keptCols, rows: (keptRows||[]) })}
+  ${buildSheet({ name:'Omitted Transactions', columns: omitCols, rows: (omittedRows||[]) })}
+</Workbook>`;
+        return xml;
+      }
+
+      function downloadXls(xmlString, filename='report.xls') {
+        const blob = new Blob([xmlString], { type: 'application/vnd.ms-excel' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = filename;
@@ -539,75 +655,21 @@
         a.remove();
         URL.revokeObjectURL(url);
       }
-      function fmtLocal(ts) {
-        const d = new Date(ts);
-        const y = d.getFullYear();
-        const m = String(d.getMonth()+1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        const hh = String(d.getHours()).padStart(2, '0');
-        const mm = String(d.getMinutes()).padStart(2, '0');
-        const ss = String(d.getSeconds()).padStart(2, '0');
-        return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
-      }
 
-      document.getElementById('btnExportCSV').onclick = () => {
+      // Export button → single XLS with multiple sheets
+      document.getElementById('btnExportExcel').onclick = () => {
         const L = window.__LAST;
-        if (!L){ alert('Run a report first.'); return; }
-
-        // 1) Overall Summary (numeric amounts—apply Excel formatting later)
-        const overall = [{
-          "Period": L.summary.period,
-          "Total Single Journeys": L.summary.total_single,
-          "Single Fare (B)": L.summary.single_fare,
-          "Total Return Journeys": L.summary.total_return,
-          "Return Fare (D)": L.summary.return_fare,
-          "Total Compensation": L.summary.total_comp,
-          "Omitted Transactions (3rd+)": L.summary.omitted
-        }];
-        downloadCSV('Overall_Summary.csv', overall);
-
-        // 2) Daily Summary (add TOTAL row at end)
-        const daily = [...L.dailyRows.map(r => ({
-          "Period": r.period,
-          "Total Annual Pass Transactions": r.total_txn,
-          "Total Qualified Transactions": r.qualified_txn,
-          "Total Single Journeys": r.total_single,
-          "Total Return Journeys": r.total_return,
-          "Total Compensation": r.compensation,
-          "Omitted Transactions": r.omitted
-        })), {
-          "Period": "TOTAL",
-          "Total Annual Pass Transactions": L.tot.total_txn,
-          "Total Qualified Transactions": L.tot.qualified_txn,
-          "Total Single Journeys": L.tot.total_single,
-          "Total Return Journeys": L.tot.total_return,
-          "Total Compensation": L.tot.compensation,
-          "Omitted Transactions": L.tot.omitted
-        }];
-        downloadCSV('Daily_Summary.csv', daily);
-
-        // 3) Kept Transactions
-        const kept = (L.keptRows || []).map(r => ({
-          "Date & Time": fmtLocal(r.TransactionProcessedTime),
-          "Vehicle No": r.VehicleRegistrationNumber,
-          "Vehicle Type": r.MapperVehicleClass ?? '',
-          "Amount": r.TransactionAmount, // numeric
-          "Journey Type": r.Journey_Type
-        }));
-        if (kept.length) downloadCSV('Kept_Transactions.csv', kept);
-
-        // 4) Omitted Transactions
-        const omitted = (L.omittedRows || []).map(r => ({
-          "Date & Time": fmtLocal(r.TransactionProcessedTime),
-          "Vehicle No": r.VehicleRegistrationNumber,
-          "Vehicle Type": r.MapperVehicleClass ?? '',
-          "Amount": r.TransactionAmount, // numeric
-          "Txn No": r.txn_no
-        }));
-        if (omitted.length) downloadCSV('Omitted_Transactions.csv', omitted);
+        if (!L) { alert('Run a report first.'); return; }
+        try {
+          const xml = buildWorkbookXml(L);
+          downloadXls(xml, 'report.xls');
+        } catch (e) {
+          console.error(e);
+          alert('Excel export failed: ' + (e && e.message ? e.message : e));
+        }
       };
 
-      // Print -> PDF
+      // Print -> PDF (browser print)
       document.getElementById('btnPrint').onclick = () => window.print();
     </script>
   </div>
