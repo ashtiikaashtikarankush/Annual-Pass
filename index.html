@@ -28,7 +28,7 @@
     .bad{ color:#b30000; font-weight:600; }
     .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
 
-    /* Widen the first column ("Period") in Daily Summary (web) */
+    /* Web table: widen "Period" */
     #dailyWrap table th:first-child,
     #dailyWrap table td:first-child {
       width: 420px;
@@ -165,15 +165,14 @@
       </table>
     </div>
 
-    <!-- libs -->
+    <!-- libs we still use -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
     <script>
-      // ===== util: safe console helper =====
       const log = (...a) => { try { console.log(...a); } catch(_){} };
 
-      // 🔗 Supabase
+      // Supabase
       const SUPABASE_URL = "https://pxcbdrkhhoqqhocmrtgj.supabase.co";
       const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4Y2JkcmtoaG9xcWhvY21ydGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5NjIxMDcsImV4cCI6MjA3MjUzODEwN30.ufOrUdyi307pqmZdH5AS56UGmMti8n_2BW8YHK-2rk4";
       const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -282,7 +281,7 @@
         return { rows: all, count: totalCount ?? all.length };
       }
 
-      // CSV upload → DB
+      // CSV → DB
       document.getElementById('btnUpload').onclick = async () => {
         const file = document.getElementById('csvFile').files[0];
         const delim = document.getElementById('csvDelimiter').value;
@@ -501,7 +500,7 @@
         `).join('');
         document.getElementById('omitWrap').style.display = omittedRows.length ? 'block':'none';
 
-        // keep for export
+        // Save for export
         window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
       });
 
@@ -509,51 +508,120 @@
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
       };
 
-      // ===== Excel 2003 XML (.xls) generator — NO external libs =====
+      // ===== Excel 2003 XML (.xls) generator (no libs) =====
       function xmlEsc(s){
         return String(s ?? '')
           .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
           .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
       }
-
-      function cell({v=null,type='String',style=null}) {
+      const row = cells => `<Row>${cells}</Row>`;
+      const cell = ({v=null,type='String',style=null}) => {
         const styleAttr = style ? ` ss:StyleID="${style}"` : '';
-        const value = (v===null || v===undefined) ? '' : v;
-        return `<Cell${styleAttr}><Data ss:Type="${type}">${xmlEsc(value)}</Data></Cell>`;
+        const val = (v===null || v===undefined) ? '' : v;
+        return `<Cell${styleAttr}><Data ss:Type="${type}">${xmlEsc(val)}</Data></Cell>`;
+      };
+
+      // Build ONE combined "Summary" sheet (Overall + Daily)
+      function buildSummarySheet({summary, dailyRows, tot}) {
+        // columns & widths (first column wide for Period area later)
+        const widths = [260, 180, 160, 200, 160, 180, 200];
+
+        // ---- Overall Summary section
+        const titleOverall = row( cell({ v:'Overall Summary', style:'sTitle' }) );
+        const overallHeader = row(
+          cell({v:'Period', style:'sHead'}) +
+          cell({v:'Total Single Journeys', style:'sHead'}) +
+          cell({v:'Single Fare (B)', style:'sHead'}) +
+          cell({v:'Total Return Journeys', style:'sHead'}) +
+          cell({v:'Return Fare (D)', style:'sHead'}) +
+          cell({v:'Total Compensation', style:'sHead'}) +
+          cell({v:'Omitted Transactions (3rd+)', style:'sHead'})
+        );
+        const overallData = row(
+          cell({v:summary.period, style:'sTxt'}) +
+          cell({v:Number(summary.total_single), type:'Number', style:'sNum'}) +
+          cell({v:Number(summary.single_fare), type:'Number', style:'sCur'}) +
+          cell({v:Number(summary.total_return), type:'Number', style:'sNum'}) +
+          cell({v:Number(summary.return_fare), type:'Number', style:'sCur'}) +
+          cell({v:Number(summary.total_comp), type:'Number', style:'sCur'}) +
+          cell({v:Number(summary.omitted), type:'Number', style:'sNum'})
+        );
+
+        const blank = row( cell({v:''}) );
+
+        // ---- Daily Summary section (with TOTAL row)
+        const titleDaily = row( cell({ v:'Daily Summary', style:'sTitle' }) );
+
+        const dailyHeader = row(
+          cell({v:'Period', style:'sHead'}) +
+          cell({v:'Total Annual Pass Transactions', style:'sHead'}) +
+          cell({v:'Total Qualified Transactions', style:'sHead'}) +
+          cell({v:'Total Single Journeys', style:'sHead'}) +
+          cell({v:'Total Return Journeys', style:'sHead'}) +
+          cell({v:'Total Compensation', style:'sHead'}) +
+          cell({v:'Omitted Transactions', style:'sHead'})
+        );
+
+        const dailyBody = dailyRows.map(r => row(
+          cell({v:r.period, style:'sTxt'}) +
+          cell({v:Number(r.total_txn), type:'Number', style:'sNum'}) +
+          cell({v:Number(r.qualified_txn), type:'Number', style:'sNum'}) +
+          cell({v:Number(r.total_single), type:'Number', style:'sNum'}) +
+          cell({v:Number(r.total_return), type:'Number', style:'sNum'}) +
+          cell({v:Number(r.compensation), type:'Number', style:'sCur'}) +
+          cell({v:Number(r.omitted), type:'Number', style:'sNum'})
+        )).join('');
+
+        const dailyTotal = row(
+          cell({v:'TOTAL', style:'sHead'}) +
+          cell({v:Number(tot.total_txn), type:'Number', style:'sNumBold'}) +
+          cell({v:Number(tot.qualified_txn), type:'Number', style:'sNumBold'}) +
+          cell({v:Number(tot.total_single), type:'Number', style:'sNumBold'}) +
+          cell({v:Number(tot.total_return), type:'Number', style:'sNumBold'}) +
+          cell({v:Number(tot.compensation), type:'Number', style:'sCurBold'}) +
+          cell({v:Number(tot.omitted), type:'Number', style:'sNumBold'})
+        );
+
+        const colsXml = widths.map(w => `<Column ss:Width="${w}"/>`).join('');
+
+        return `
+          <Worksheet ss:Name="Summary">
+            <Table>
+              ${colsXml}
+              ${titleOverall}
+              ${overallHeader}
+              ${overallData}
+              ${blank}
+              ${titleDaily}
+              ${dailyHeader}
+              ${dailyBody}
+              ${dailyTotal}
+            </Table>
+          </Worksheet>
+        `;
       }
 
-      function row(cellsHtml){ return `<Row>${cellsHtml}</Row>`; }
-
-      function buildSheet({name, columns, rows, colWidths=[]}) {
-        const cols = (colWidths.length ? colWidths : columns.map(_=>80))
-          .map(w => `<Column ss:Width="${w}"/>`).join('');
-        // header
-        const headerCells = columns.map(col => cell({v: col.header, type:'String', style:'sHead'})).join('');
-        const headerRow = row(headerCells);
-        // data rows
-        const dataRows = rows.map(r => {
-          const cells = columns.map(col => {
-            const val = typeof col.accessor === 'function' ? col.accessor(r) : r[col.accessor];
-            if (col.kind === 'number') return cell({v: (val==null?'':Number(val)), type:'Number', style: col.style||'sNum'});
-            if (col.kind === 'currency') return cell({v: (val==null?'':Number(val)), type:'Number', style: col.style||'sCur'});
-            if (col.kind === 'date') return cell({v: val, type:'String', style: col.style||'sTxt'}); // keeping text display
-            return cell({v: (val==null?'':val), type:'String', style: col.style||'sTxt'});
-          }).join('');
-          return row(cells);
-        }).join('');
+      function buildListSheet({name, rows, columns}) {
+        const colsXml = columns.map(c => `<Column ss:Width="${c.w || 120}"/>`).join('');
+        const header = row(columns.map(c => cell({v:c.h, style:'sHead'})).join(''));
+        const body = rows.map(r => row(columns.map(c => {
+          const val = typeof c.a === 'function' ? c.a(r) : r[c.a];
+          if (c.t === 'n') return cell({v:Number(val ?? 0), type:'Number', style: c.s || 'sNum'});
+          if (c.t === 'c') return cell({v:Number(val ?? 0), type:'Number', style: c.s || 'sCur'});
+          return cell({v: (val ?? ''), style: c.s || 'sTxt'});
+        }).join(''))).join('');
         return `
           <Worksheet ss:Name="${xmlEsc(name)}">
             <Table>
-              ${cols}
-              ${headerRow}
-              ${dataRows}
+              ${colsXml}
+              ${header}
+              ${body}
             </Table>
           </Worksheet>
         `;
       }
 
       function buildWorkbookXml({summary, dailyRows, tot, keptRows, omittedRows}) {
-        // Styles: header, text, number, currency
         const styles = `
           <Styles>
             <Style ss:ID="sHead">
@@ -563,69 +631,54 @@
                 <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
               </Borders>
             </Style>
+            <Style ss:ID="sTitle">
+              <Font ss:Bold="1" ss:Size="12"/>
+            </Style>
             <Style ss:ID="sTxt">
               <Alignment ss:Vertical="Center"/>
             </Style>
             <Style ss:ID="sNum">
               <NumberFormat ss:Format="#,##0"/>
             </Style>
+            <Style ss:ID="sNumBold">
+              <Font ss:Bold="1"/>
+              <NumberFormat ss:Format="#,##0"/>
+            </Style>
             <Style ss:ID="sCur">
+              <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
+            </Style>
+            <Style ss:ID="sCurBold">
+              <Font ss:Bold="1"/>
               <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
             </Style>
           </Styles>
         `;
 
-        // Sheet 1: Overall Summary (single row)
-        const overallCols = [
-          { header:'Period', accessor:r=>r.period, kind:'text' },
-          { header:'Total Single Journeys', accessor:r=>r.total_single, kind:'number' },
-          { header:'Single Fare (B)', accessor:r=>r.single_fare, kind:'currency' },
-          { header:'Total Return Journeys', accessor:r=>r.total_return, kind:'number' },
-          { header:'Return Fare (D)', accessor:r=>r.return_fare, kind:'currency' },
-          { header:'Total Compensation', accessor:r=>r.total_comp, kind:'currency' },
-          { header:'Omitted Transactions (3rd+)', accessor:r=>r.omitted, kind:'number' },
-        ];
-        const overallRows = [summary];
+        // Kept Transactions sheet
+        const keptSheet = buildListSheet({
+          name: 'Kept Transactions',
+          rows: keptRows || [],
+          columns: [
+            { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
+            { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
+            { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
+            { h:'Amount', a:'TransactionAmount', t:'c', w:110 },
+            { h:'Journey Type', a:'Journey_Type', t:'s', w:120 },
+          ]
+        });
 
-        // Sheet 2: Daily Summary (+ TOTAL)
-        const dailyWithTotal = [...dailyRows, {
-          period: 'TOTAL',
-          total_txn: tot.total_txn,
-          qualified_txn: tot.qualified_txn,
-          total_single: tot.total_single,
-          total_return: tot.total_return,
-          compensation: tot.compensation,
-          omitted: tot.omitted
-        }];
-        const dailyCols = [
-          { header:'Period', accessor:'period', kind:'text' },
-          { header:'Total Annual Pass Transactions', accessor:'total_txn', kind:'number' },
-          { header:'Total Qualified Transactions', accessor:'qualified_txn', kind:'number' },
-          { header:'Total Single Journeys', accessor:'total_single', kind:'number' },
-          { header:'Total Return Journeys', accessor:'total_return', kind:'number' },
-          { header:'Total Compensation', accessor:'compensation', kind:'currency' },
-          { header:'Omitted Transactions', accessor:'omitted', kind:'number' },
-        ];
-        // wider first col for Period
-        const dailyWidths = [260, 140, 140, 140, 140, 160, 150];
-
-        // Sheet 3: Kept Transactions
-        const keptCols = [
-          { header:'Date & Time', accessor:r=>new Date(r.TransactionProcessedTime).toLocaleString(), kind:'text' },
-          { header:'Vehicle No', accessor:'VehicleRegistrationNumber', kind:'text' },
-          { header:'Vehicle Type', accessor:r=> (r.MapperVehicleClass ?? ''), kind:'text' },
-          { header:'Amount', accessor:'TransactionAmount', kind:'currency' },
-          { header:'Journey Type', accessor:'Journey_Type', kind:'text' },
-        ];
-
-        // Sheet 4: Omitted Transactions
-        const omitCols = [
-          { header:'Date & Time', accessor:r=>new Date(r.TransactionProcessedTime).toLocaleString(), kind:'text' },
-          { header:'Vehicle No', accessor:'VehicleRegistrationNumber', kind:'text' },
-          { header:'Vehicle Type', accessor:r=> (r.MapperVehicleClass ?? ''), kind:'text' },
-          { header:'Amount', accessor:'TransactionAmount', kind:'currency' },
-          { header:'Txn No', accessor:'txn_no', kind:'number' },
-        ];
+        // Omitted Transactions sheet
+        const omitSheet = buildListSheet({
+          name: 'Omitted Transactions',
+          rows: omittedRows || [],
+          columns: [
+            { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
+            { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
+            { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
+            { h:'Amount', a:'TransactionAmount', t:'c', w:110 },
+            { h:'Txn No', a:'txn_no', t:'n', w:80 },
+          ]
+        });
 
         const xml =
 `<?xml version="1.0"?>
@@ -637,10 +690,9 @@
   xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
   xmlns:html="http://www.w3.org/TR/REC-html40">
   ${styles}
-  ${buildSheet({ name:'Overall Summary', columns: overallCols, rows: overallRows })}
-  ${buildSheet({ name:'Daily Summary', columns: dailyCols, rows: dailyWithTotal, colWidths: dailyWidths })}
-  ${buildSheet({ name:'Kept Transactions', columns: keptCols, rows: (keptRows||[]) })}
-  ${buildSheet({ name:'Omitted Transactions', columns: omitCols, rows: (omittedRows||[]) })}
+  ${buildSummarySheet({summary, dailyRows, tot})}
+  ${keptSheet}
+  ${omitSheet}
 </Workbook>`;
         return xml;
       }
@@ -656,7 +708,7 @@
         URL.revokeObjectURL(url);
       }
 
-      // Export button → single XLS with multiple sheets
+      // Export → one file, Summary sheet combines Overall + Daily
       document.getElementById('btnExportExcel').onclick = () => {
         const L = window.__LAST;
         if (!L) { alert('Run a report first.'); return; }
@@ -669,7 +721,7 @@
         }
       };
 
-      // Print -> PDF (browser print)
+      // Print -> PDF
       document.getElementById('btnPrint').onclick = () => window.print();
     </script>
   </div>
