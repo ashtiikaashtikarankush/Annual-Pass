@@ -95,7 +95,7 @@
         <div class="box"><div class="muted">Omitted Transactions (3rd+)</div><div id="sum_omitted" style="font-weight:700">0</div></div>
       </div>
       <div class="row" style="margin-top:10px">
-        <button id="btnExportExcel" style="background:#28a745">Export to Excel</button>
+        <button id="btnExportCSV" style="background:#28a745">Export CSV (All)</button>
         <button id="btnPrint" style="background:#6c757d">Export to PDF (Print)</button>
         <span id="rowCount" class="muted" style="margin-left:10px"></span>
       </div>
@@ -168,36 +168,6 @@
     <!-- libs -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-
-    <!-- XLSX multi-CDN fallback loader -->
-    <script>
-      (function loadXLSXWithFallback() {
-        const sources = [
-          "https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js",
-          "https://unpkg.com/xlsx@0.19.3/dist/xlsx.full.min.js",
-          "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.19.3/xlsx.full.min.js",
-          "https://rawcdn.githack.com/SheetJS/sheetjs/v0.19.3/dist/xlsx.full.min.js"
-        ];
-        let i = 0;
-        function tryNext() {
-          if (i >= sources.length) {
-            alert("Excel library failed to load from all CDNs. If blocked, allow one CDN or self-host xlsx.full.min.js.");
-            return;
-          }
-          const url = sources[i++];
-          const s = document.createElement("script");
-          s.src = url;
-          s.async = true;
-          s.onload = () => {
-            if (window.XLSX) { console.log("XLSX loaded:", url); }
-            else { tryNext(); }
-          };
-          s.onerror = tryNext;
-          document.head.appendChild(s);
-        }
-        tryNext();
-      })();
-    </script>
 
     <script>
       // ===== util: safe console helper =====
@@ -446,13 +416,13 @@
             }
           }
 
-        const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
-        dailyRows.push({
-          period: periodStr,
-          total_txn, qualified_txn: qualified,
-          total_single: singles, total_return: returns,
-          compensation: comp, omitted
-        });
+          const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
+          dailyRows.push({
+            period: periodStr,
+            total_txn, qualified_txn: qualified,
+            total_single: singles, total_return: returns,
+            compensation: comp, omitted
+          });
         }
 
         const tot = {
@@ -540,7 +510,35 @@
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
       };
 
-      // helper: format a timestamp to local "YYYY-MM-DD HH:mm:ss"
+      // ===== CSV EXPORT =====
+      function csvEscape(val){
+        if (val == null) return '';
+        if (typeof val === 'number') return String(val);
+        const s = String(val);
+        if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+        return s;
+      }
+      function toCSV(rows){
+        if (!rows || !rows.length) return '\uFEFF';
+        const headers = Object.keys(rows[0]);
+        const lines = [];
+        lines.push(headers.join(','));
+        for (const r of rows){
+          lines.push(headers.map(h => csvEscape(r[h])).join(','));
+        }
+        return '\uFEFF' + lines.join('\r\n'); // BOM for Excel UTF-8
+      }
+      function downloadCSV(filename, rows){
+        const csv = toCSV(rows);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
       function fmtLocal(ts) {
         const d = new Date(ts);
         const y = d.getFullYear();
@@ -552,125 +550,61 @@
         return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
       }
 
-      // number format helper
-      function setNumFmtByHeader(ws, headerText, fmt) {
-        if (!ws['!ref']) return;
-        const range = XLSX.utils.decode_range(ws['!ref']);
-        let colIndex = -1;
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const addr = XLSX.utils.encode_cell({ r: range.s.r, c });
-          const cell = ws[addr];
-          if (cell && (cell.v === headerText)) { colIndex = c; break; }
-        }
-        if (colIndex === -1) return;
-        for (let r = range.s.r + 1; r <= range.e.r; r++) {
-          const addr = XLSX.utils.encode_cell({ r, c: colIndex });
-          const cell = ws[addr]; if (!cell) continue;
-          const num = typeof cell.v === 'number' ? cell.v : Number(cell.v);
-          if (!isNaN(num)) { cell.v = num; cell.t = 'n'; cell.z = fmt; }
-        }
-      }
+      document.getElementById('btnExportCSV').onclick = () => {
+        const L = window.__LAST;
+        if (!L){ alert('Run a report first.'); return; }
 
-      // ensure XLSX loaded
-      function ensureXLSX() {
-        if (!window.XLSX) {
-          alert('Excel library failed to load. Check network / adblock and try again.');
-          return false;
-        }
-        return true;
-      }
-      // write file with best-available API
-      function writeWorkbook(wb, name) {
-        const opts = { compression: true };
-        if (typeof XLSX.writeFileXLSX === 'function') return XLSX.writeFileXLSX(wb, name, opts);
-        return XLSX.writeFile(wb, name, opts);
-      }
+        // 1) Overall Summary (numeric amounts—apply Excel formatting later)
+        const overall = [{
+          "Period": L.summary.period,
+          "Total Single Journeys": L.summary.total_single,
+          "Single Fare (B)": L.summary.single_fare,
+          "Total Return Journeys": L.summary.total_return,
+          "Return Fare (D)": L.summary.return_fare,
+          "Total Compensation": L.summary.total_comp,
+          "Omitted Transactions (3rd+)": L.summary.omitted
+        }];
+        downloadCSV('Overall_Summary.csv', overall);
 
-      // EXCEL export (robust + fallback to DOM tables)
-      document.getElementById('btnExportExcel').onclick = () => {
-        try {
-          if (!ensureXLSX()) return;
-          const L = window.__LAST;
-          const wb = XLSX.utils.book_new();
+        // 2) Daily Summary (add TOTAL row at end)
+        const daily = [...L.dailyRows.map(r => ({
+          "Period": r.period,
+          "Total Annual Pass Transactions": r.total_txn,
+          "Total Qualified Transactions": r.qualified_txn,
+          "Total Single Journeys": r.total_single,
+          "Total Return Journeys": r.total_return,
+          "Total Compensation": r.compensation,
+          "Omitted Transactions": r.omitted
+        })), {
+          "Period": "TOTAL",
+          "Total Annual Pass Transactions": L.tot.total_txn,
+          "Total Qualified Transactions": L.tot.qualified_txn,
+          "Total Single Journeys": L.tot.total_single,
+          "Total Return Journeys": L.tot.total_return,
+          "Total Compensation": L.tot.compensation,
+          "Omitted Transactions": L.tot.omitted
+        }];
+        downloadCSV('Daily_Summary.csv', daily);
 
-          if (L && L.summary && L.dailyRows) {
-            // Overall Summary
-            const summaryRows = [{
-              "Period": L.summary.period,
-              "Total Single Journeys": L.summary.total_single,
-              "Single Fare (B)": L.summary.single_fare,
-              "Total Return Journeys": L.summary.total_return,
-              "Return Fare (D)": L.summary.return_fare,
-              "Total Compensation": L.summary.total_comp,
-              "Omitted Transactions (3rd+)": L.summary.omitted
-            }];
-            const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-            setNumFmtByHeader(wsSummary, "Total Compensation", '[$₹-400]#,##0.00');
-            XLSX.utils.book_append_sheet(wb, wsSummary, 'Overall Summary');
+        // 3) Kept Transactions
+        const kept = (L.keptRows || []).map(r => ({
+          "Date & Time": fmtLocal(r.TransactionProcessedTime),
+          "Vehicle No": r.VehicleRegistrationNumber,
+          "Vehicle Type": r.MapperVehicleClass ?? '',
+          "Amount": r.TransactionAmount, // numeric
+          "Journey Type": r.Journey_Type
+        }));
+        if (kept.length) downloadCSV('Kept_Transactions.csv', kept);
 
-            // Daily Summary (+ total)
-            const dailyWithTotal = [...L.dailyRows, {
-              period: 'TOTAL',
-              total_txn: L.tot.total_txn,
-              qualified_txn: L.tot.qualified_txn,
-              total_single: L.tot.total_single,
-              total_return: L.tot.total_return,
-              compensation: L.tot.compensation,
-              omitted: L.tot.omitted
-            }];
-            const dailyExport = dailyWithTotal.map(r => ({
-              "Period": r.period,
-              "Total Annual Pass Transactions": r.total_txn,
-              "Total Qualified Transactions": r.qualified_txn,
-              "Total Single Journeys": r.total_single,
-              "Total Return Journeys": r.total_return,
-              "Total Compensation": r.compensation,
-              "Omitted Transactions": r.omitted
-            }));
-            const wsDaily = XLSX.utils.json_to_sheet(dailyExport);
-            wsDaily['!cols'] = [{ wch: 40 }]; /* widen Period */
-            setNumFmtByHeader(wsDaily, "Total Compensation", '[$₹-400]#,##0.00');
-            XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
-
-            // Kept
-            const keptExport = (L.keptRows || []).map(r => ({
-              "Date & Time": fmtLocal(r.TransactionProcessedTime),
-              "Vehicle No": r.VehicleRegistrationNumber,
-              "Vehicle Type": r.MapperVehicleClass ?? '',
-              "Amount": r.TransactionAmount,
-              "Journey Type": r.Journey_Type
-            }));
-            const wsKept = XLSX.utils.json_to_sheet(keptExport);
-            setNumFmtByHeader(wsKept, "Amount", '[$₹-400]#,##0.00');
-            XLSX.utils.book_append_sheet(wb, wsKept, 'Kept Transactions');
-
-            // Omitted
-            const omittedExport = (L.omittedRows || []).map(r => ({
-              "Date & Time": fmtLocal(r.TransactionProcessedTime),
-              "Vehicle No": r.VehicleRegistrationNumber,
-              "Vehicle Type": r.MapperVehicleClass ?? '',
-              "Amount": r.TransactionAmount,
-              "Txn No": r.txn_no
-            }));
-            const wsOmit = XLSX.utils.json_to_sheet(omittedExport);
-            setNumFmtByHeader(wsOmit, "Amount", '[$₹-400]#,##0.00');
-            XLSX.utils.book_append_sheet(wb, wsOmit, 'Omitted Transactions');
-          } else {
-            /* Fallback: export visible DOM tables */
-            const wsDaily = XLSX.utils.table_to_sheet(document.getElementById('dailyTable'));
-            const wsKept  = XLSX.utils.table_to_sheet(document.getElementById('keptTable'));
-            const wsOmit  = XLSX.utils.table_to_sheet(document.getElementById('omitTable'));
-            wsDaily['!cols'] = [{ wch: 40 }];
-            XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
-            if (wsKept['!ref'])  XLSX.utils.book_append_sheet(wb, wsKept,  'Kept Transactions');
-            if (wsOmit['!ref'])  XLSX.utils.book_append_sheet(wb, wsOmit,  'Omitted Transactions');
-          }
-
-          writeWorkbook(wb, 'summary.xlsx');
-        } catch (err) {
-          log(err);
-          alert('Excel export failed: ' + (err && err.message ? err.message : err));
-        }
+        // 4) Omitted Transactions
+        const omitted = (L.omittedRows || []).map(r => ({
+          "Date & Time": fmtLocal(r.TransactionProcessedTime),
+          "Vehicle No": r.VehicleRegistrationNumber,
+          "Vehicle Type": r.MapperVehicleClass ?? '',
+          "Amount": r.TransactionAmount, // numeric
+          "Txn No": r.txn_no
+        }));
+        if (omitted.length) downloadCSV('Omitted_Transactions.csv', omitted);
       };
 
       // Print -> PDF
