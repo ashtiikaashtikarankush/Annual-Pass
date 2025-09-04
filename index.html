@@ -443,7 +443,7 @@
         // period text from the op-day key
         const nextDay = new Date(key + 'T00:00:00');
         nextDay.setDate(nextDay.getDate() + 1);
-        const periodStr = `${key} 08:00:00 to ${ymd(nextDay)} 07:59:59`;
+        const periodStr = `${key} 08:00:00 `;
 
         for (const r of rows) {
           const vrn = (r.vehicle_registration_number || '').toString();
