@@ -5,12 +5,12 @@
   <title>Annual Pass Transactions - Mundiyar Toll</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    .container { max-width: 1200px; margin: 0 auto; }
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+    .container { max-width: 1200px; margin: 0 auto; }
     .page-title { color:#333; text-align:center; margin: 0 0 16px 0; }
-
     h3{ margin-top:28px; }
-    .card{ background:#fff;border:1px solid #ddd;border-radius:10px;padding:14px;box-shadow:2px 2px 6px rgba(0,0,0,.08); margin-bottom:16px;}
+    .card{ background:#fff;border:1px solid #ddd;border-radius:10px;padding:14px;
+           box-shadow:2px 2px 6px rgba(0,0,0,.08); margin-bottom:16px;}
     label{ display:block; margin:8px 0 6px; color:#444;}
     input,button,select{ padding:8px 10px; border-radius:8px; border:1px solid #aaa; }
     button{ background:#007bff; color:#fff; border:none; cursor:pointer; }
@@ -26,7 +26,13 @@
     .success{ color:#1e7e34; font-weight:600; }
     .warn{ color:#b36b00; font-weight:600; }
     .bad{ color:#b30000; font-weight:600; }
-    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    /* Login screen */
+    #loginBox {max-width:400px;margin:80px auto;padding:20px;border:1px solid #ccc;
+               border-radius:10px;background:#fff;box-shadow:2px 2px 8px rgba(0,0,0,0.1);}
+    #loginBox h2 {text-align:center;margin-bottom:20px;}
+    #loginError {color:#b30000;text-align:center;margin-top:10px;display:none;}
 
     /* Web table: widen "Period" */
     #dailyWrap table th:first-child,
@@ -38,138 +44,172 @@
   </style>
 </head>
 <body>
-  <div class="container">
-    <h2 class="page-title">Annual Pass Transactions - Mundiyar Toll</h2>
 
-    <!-- CSV UPLOAD -->
-    <div class="card">
-      <h3>Upload CSV → <code>pass_transactions</code></h3>
-      <div class="row">
-        <input type="file" id="csvFile" accept=".csv" />
-        <select id="csvDelimiter" title="Choose delimiter">
-          <option value=",">Comma</option>
-          <option value=";">Semicolon</option>
-          <option value="\t">Tab</option>
-        </select>
-        <button id="btnUpload">Parse & Upload</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <span id="uploadInfo" class="muted"></span>
-      </div>
-      <pre id="errorBox" class="mono" style="white-space:pre-wrap;color:#b30000;margin-top:8px;"></pre>
-    </div>
+  <!-- LOGIN SCREEN -->
+  <div id="loginBox">
+    <h2>Mundiyar Toll - Login</h2>
+    <label>Username:</label>
+    <input type="text" id="usernameInput" style="width:100%;padding:10px;margin-bottom:12px;">
+    <label>Password:</label>
+    <input type="password" id="passwordInput" style="width:100%;padding:10px;margin-bottom:12px;">
+    <button onclick="checkLogin()" style="width:100%;padding:10px;">Login</button>
+    <p id="loginError">Invalid username or password.</p>
+  </div>
 
-    <!-- REPORT FILTER -->
-    <div class="card">
-      <h3>Build Report (08:00 → 07:59)</h3>
-      <form id="filterForm" class="row">
-        <div>
-          <label>From Date</label>
-          <input type="date" id="fromDate" required />
+  <!-- MAIN APP (hidden until login) -->
+  <div id="app" style="display:none">
+    <div class="container">
+      <h2 class="page-title">Annual Pass Transactions - Mundiyar Toll</h2>
+
+      <!-- ================= CSV UPLOAD ================= -->
+      <div class="card">
+        <h3>Upload CSV → <code>pass_transactions</code></h3>
+        <div class="row">
+          <input type="file" id="csvFile" accept=".csv" />
+          <select id="csvDelimiter" title="Choose delimiter">
+            <option value=",">Comma</option>
+            <option value=";">Semicolon</option>
+            <option value="\t">Tab</option>
+          </select>
+          <button id="btnUpload">Parse & Upload</button>
         </div>
-        <div>
-          <label>To Date</label>
-          <input type="date" id="toDate" required />
+        <div class="row" style="margin-top:8px">
+          <span id="uploadInfo" class="muted"></span>
         </div>
-        <div style="align-self:flex-end">
-          <button type="submit">Filter</button>
+        <pre id="errorBox" class="mono" style="white-space:pre-wrap;color:#b30000;margin-top:8px;"></pre>
+      </div>
+
+      <!-- ================= REPORT FILTER ================= -->
+      <div class="card">
+        <h3>Build Report (08:00 → 07:59)</h3>
+        <form id="filterForm" class="row">
+          <div>
+            <label>From Date</label>
+            <input type="date" id="fromDate" required />
+          </div>
+          <div>
+            <label>To Date</label>
+            <input type="date" id="toDate" required />
+          </div>
+          <div style="align-self:flex-end">
+            <button type="submit">Filter</button>
+          </div>
+          <div style="align-self:flex-end">
+            <button id="btnRefresh" type="button">Refresh</button>
+          </div>
+        </form>
+        <div class="row" style="margin-top:6px">
+          <span class="muted">Only transactions with <strong>Transaction Amount = 15</strong> are considered for compensation logic.</span>
         </div>
-        <div style="align-self:flex-end">
-          <button id="btnRefresh" type="button">Refresh</button>
+      </div>
+
+      <!-- ================= SUMMARY ================= -->
+      <div id="summaryWrap" class="card" style="display:none">
+        <div class="summary">
+          <div class="box"><div class="muted">Period</div><div id="sum_period" style="font-weight:700">—</div></div>
+          <div class="box"><div class="muted">Total Single Journeys</div><div id="sum_total_single" style="font-weight:700">0</div></div>
+          <div class="box"><div class="muted">Single Fare (B)</div><div id="sum_single_fare" style="font-weight:700">110</div></div>
+          <div class="box"><div class="muted">Total Return Journeys</div><div id="sum_total_return" style="font-weight:700">0</div></div>
+          <div class="box"><div class="muted">Return Fare (D)</div><div id="sum_return_fare" style="font-weight:700">55</div></div>
+          <div class="box"><div class="muted">Total Compensation</div><div id="sum_total_comp" style="font-weight:700">0</div></div>
+          <div class="box"><div class="muted">Omitted Transactions (3rd+)</div><div id="sum_omitted" style="font-weight:700">0</div></div>
         </div>
-      </form>
-      <div class="row" style="margin-top:6px">
-        <span class="muted">Only transactions with <strong>Transaction Amount = 15</strong> are considered for compensation logic.</span>
+        <div class="row" style="margin-top:10px">
+          <button id="btnExportExcel" style="background:#28a745">Export to Excel</button>
+          <button id="btnPrint" style="background:#6c757d">Export to PDF (Print)</button>
+          <span id="rowCount" class="muted" style="margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- ================= DAILY ================= -->
+      <div id="dailyWrap" class="card" style="display:none">
+        <h3>Daily Summary</h3>
+        <table id="dailyTable">
+          <thead>
+            <tr>
+              <th>Period</th>
+              <th>Total Annual Pass Transactions</th>
+              <th>Total Qualified Transactions</th>
+              <th>Total Single Journeys</th>
+              <th>Total Return Journeys</th>
+              <th>Total Compensation</th>
+              <th>Omitted Transactions</th>
+            </tr>
+          </thead>
+          <tbody id="dailyTbody"></tbody>
+          <tfoot>
+            <tr style="background:#ffc107;font-weight:700">
+              <td id="tot_period">TOTAL</td>
+              <td id="tot_total_txn">0</td>
+              <td id="tot_qualified_txn">0</td>
+              <td id="tot_total_single">0</td>
+              <td id="tot_total_return">0</td>
+              <td id="tot_compensation">0</td>
+              <td id="tot_omitted">0</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- ================= KEPT ================= -->
+      <div id="keptWrap" class="card" style="display:none">
+        <h3>Transactions (First 2 per Vehicle in 24hr.)</h3>
+        <table id="keptTable">
+          <thead>
+            <tr>
+              <th>Date & Time</th>
+              <th>Vehicle No</th>
+              <th>Vehicle Type</th>
+              <th>Amount</th>
+              <th>Journey Type</th>
+            </tr>
+          </thead>
+          <tbody id="keptTbody"></tbody>
+        </table>
+      </div>
+
+      <!-- ================= OMITTED ================= -->
+      <div id="omitWrap" class="card" style="display:none">
+        <h3>Omitted Transactions (3rd and after)</h3>
+        <table id="omitTable">
+          <thead>
+            <tr>
+              <th>Date & Time</th>
+              <th>Vehicle No</th>
+              <th>Vehicle Type</th>
+              <th>Amount</th>
+              <th>Txn No</th>
+            </tr>
+          </thead>
+          <tbody id="omitTbody"></tbody>
+        </table>
       </div>
     </div>
+  </div>
 
-    <!-- SUMMARY -->
-    <div id="summaryWrap" class="card" style="display:none">
-      <div class="summary">
-        <div class="box"><div class="muted">Period</div><div id="sum_period" style="font-weight:700">—</div></div>
-        <div class="box"><div class="muted">Total Single Journeys</div><div id="sum_total_single" style="font-weight:700">0</div></div>
-        <div class="box"><div class="muted">Single Fare (B)</div><div id="sum_single_fare" style="font-weight:700">110</div></div>
-        <div class="box"><div class="muted">Total Return Journeys</div><div id="sum_total_return" style="font-weight:700">0</div></div>
-        <div class="box"><div class="muted">Return Fare (D)</div><div id="sum_return_fare" style="font-weight:700">55</div></div>
-        <div class="box"><div class="muted">Total Compensation</div><div id="sum_total_comp" style="font-weight:700">0</div></div>
-        <div class="box"><div class="muted">Omitted Transactions (3rd+)</div><div id="sum_omitted" style="font-weight:700">0</div></div>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button id="btnExportExcel" style="background:#28a745">Export to Excel</button>
-        <button id="btnPrint" style="background:#6c757d">Export to PDF (Print)</button>
-        <span id="rowCount" class="muted" style="margin-left:10px"></span>
-      </div>
-    </div>
+  <!-- ============ LOGIN SCRIPT ============ -->
+  <script>
+    function checkLogin(){
+      const enteredUser = document.getElementById('usernameInput').value.trim();
+      const enteredPass = document.getElementById('passwordInput').value;
 
-    <!-- DAILY -->
-    <div id="dailyWrap" class="card" style="display:none">
-      <h3>Daily Summary</h3>
-      <table id="dailyTable">
-        <thead>
-          <tr>
-            <th>Period</th>
-            <th>Total Annual Pass Transactions</th>
-            <th>Total Qualified Transactions</th>
-            <th>Total Single Journeys</th>
-            <th>Total Return Journeys</th>
-            <th>Total Compensation</th>
-            <th>Omitted Transactions</th>
-          </tr>
-        </thead>
-        <tbody id="dailyTbody"></tbody>
-        <tfoot>
-          <tr style="background:#ffc107;font-weight:700">
-            <td id="tot_period">TOTAL</td>
-            <td id="tot_total_txn">0</td>
-            <td id="tot_qualified_txn">0</td>
-            <td id="tot_total_single">0</td>
-            <td id="tot_total_return">0</td>
-            <td id="tot_compensation">0</td>
-            <td id="tot_omitted">0</td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
+      // ✅ Set allowed usernames + passwords here
+      const validUsers = { "admin":"1234", "manager":"abcd" };
 
-    <!-- KEPT -->
-    <div id="keptWrap" class="card" style="display:none">
-      <h3>Transactions (First 2 per Vehicle in 24hr.)</h3>
-      <table id="keptTable">
-        <thead>
-          <tr>
-            <th>Date & Time</th>
-            <th>Vehicle No</th>
-            <th>Vehicle Type</th>
-            <th>Amount</th>
-            <th>Journey Type</th>
-          </tr>
-        </thead>
-        <tbody id="keptTbody"></tbody>
-      </table>
-    </div>
+      if(validUsers[enteredUser] && validUsers[enteredUser] === enteredPass){
+        document.getElementById('loginBox').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+      } else {
+        document.getElementById('loginError').style.display = 'block';
+      }
+    }
+  </script>
 
-    <!-- OMITTED -->
-    <div id="omitWrap" class="card" style="display:none">
-      <h3>Omitted Transactions (3rd and after)</h3>
-      <table id="omitTable">
-        <thead>
-          <tr>
-            <th>Date & Time</th>
-            <th>Vehicle No</th>
-            <th>Vehicle Type</th>
-            <th>Amount</th>
-            <th>Txn No</th>
-          </tr>
-        </thead>
-        <tbody id="omitTbody"></tbody>
-      </table>
-    </div>
+  <!-- ============ SUPABASE + CSV LOGIC ============ -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
-    <!-- libs we still use -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-
-    <script>
+  <script>
       const log = (...a) => { try { console.log(...a); } catch(_){} };
 
       // Supabase
@@ -709,33 +749,33 @@
       }
 
       // Export → one file, Summary sheet combines Overall + Daily
-document.getElementById('btnExportExcel').onclick = () => {
-  const L = window.__LAST;
-  if (!L) { alert('Run a report first.'); return; }
-  try {
-    const xml = buildWorkbookXml(L);
+      document.getElementById('btnExportExcel').onclick = () => {
+        const L = window.__LAST;
+        if (!L) { alert('Run a report first.'); return; }
+        try {
+          const xml = buildWorkbookXml(L);
 
-    // ✅ Build filename from site name + searched date range
-    const siteName = "Mundiyar_Toll";  // fixed site name
-    const from = document.getElementById('fromDate').value;
-    const to = document.getElementById('toDate').value;
+          // ✅ Build filename from site name + searched date range
+          const siteName = "Mundiyar_Toll";  // fixed site name
+          const from = document.getElementById('fromDate').value;
+          const to = document.getElementById('toDate').value;
 
-    let fname = `${siteName}_Annual_Pass`;
-    if (from && to) {
-      fname += `_${from}_to_${to}`;
-    }
-    fname += ".xls";
+          let fname = `${siteName}_Annual_Pass`;
+          if (from && to) {
+            fname += `_${from}_to_${to}`;
+          }
+          fname += ".xls";
 
-    downloadXls(xml, fname);
-  } catch (e) {
-    console.error(e);
-    alert('Excel export failed: ' + (e && e.message ? e.message : e));
-  }
-};
+          downloadXls(xml, fname);
+        } catch (e) {
+          console.error(e);
+          alert('Excel export failed: ' + (e && e.message ? e.message : e));
+        }
+      };
 
       // Print -> PDF
       document.getElementById('btnPrint').onclick = () => window.print();
-    </script>
-  </div>
+  </script>
+
 </body>
 </html>
