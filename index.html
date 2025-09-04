@@ -578,7 +578,35 @@
         return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
       }
 
-      // EXCEL export (mirror web view: 4 sheets + wide Period col)
+      // === Excel helpers: set number format for specific header columns ===
+      function setNumFmtByHeader(ws, headerText, fmt) {
+        if (!ws['!ref']) return;
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        // find header column index by matching headerText in first row
+        let colIndex = -1;
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const addr = XLSX.utils.encode_cell({ r: range.s.r, c });
+          const cell = ws[addr];
+          if (cell && (cell.v === headerText)) { colIndex = c; break; }
+        }
+        if (colIndex === -1) return;
+
+        // apply format to all rows below header
+        for (let r = range.s.r + 1; r <= range.e.r; r++) {
+          const addr = XLSX.utils.encode_cell({ r, c: colIndex });
+          const cell = ws[addr];
+          if (!cell) continue;
+          // ensure numeric type
+          const num = typeof cell.v === 'number' ? cell.v : Number(cell.v);
+          if (!isNaN(num)) {
+            cell.v = num;
+            cell.t = 'n';
+            cell.z = fmt; // e.g., '[$₹-400]#,##0.00'
+          }
+        }
+      }
+
+      // EXCEL export (mirror web view: 4 sheets + currency formats)
       document.getElementById('btnExportExcel').onclick = () => {
         const L = window.__LAST;
         if(!L){ alert('Run a report first.'); return; }
@@ -596,6 +624,8 @@
           "Omitted Transactions (3rd+)": L.summary.omitted
         }];
         const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+        // format currency for Total Compensation
+        setNumFmtByHeader(wsSummary, "Total Compensation", '[$₹-400]#,##0.00');
         XLSX.utils.book_append_sheet(wb, wsSummary, 'Overall Summary');
 
         // Daily Summary (rows + TOTAL)
@@ -619,6 +649,8 @@
         }));
         const wsDaily = XLSX.utils.json_to_sheet(dailyExport);
         wsDaily['!cols'] = [{ wch: 40 }]; // widen Period col
+        // currency format for Total Compensation
+        setNumFmtByHeader(wsDaily, "Total Compensation", '[$₹-400]#,##0.00');
         XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily Summary');
 
         // Kept Transactions
@@ -630,6 +662,8 @@
           "Journey Type": r.Journey_Type
         }));
         const wsKept = XLSX.utils.json_to_sheet(keptExport);
+        // currency format for Amount
+        setNumFmtByHeader(wsKept, "Amount", '[$₹-400]#,##0.00');
         XLSX.utils.book_append_sheet(wb, wsKept, 'Kept Transactions');
 
         // Omitted Transactions
@@ -641,9 +675,12 @@
           "Txn No": r.txn_no
         }));
         const wsOmit = XLSX.utils.json_to_sheet(omittedExport);
+        // currency format for Amount
+        setNumFmtByHeader(wsOmit, "Amount", '[$₹-400]#,##0.00');
         XLSX.utils.book_append_sheet(wb, wsOmit, 'Omitted Transactions');
 
-        XLSX.writeFile(wb, 'summary.xlsx');
+        // write file (with compression for smaller size)
+        XLSX.writeFile(wb, 'summary.xlsx', { compression: true });
       };
 
       // Print -> PDF
