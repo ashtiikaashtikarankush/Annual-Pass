@@ -38,7 +38,7 @@
 
   <!-- CSV UPLOAD -->
   <div class="card">
-    <h3>Upload CSV → Insert rows into <code>pass_transactions</code></h3>
+    <h3>Upload CSV → <code>pass_transactions</code></h3>
     <p class="muted">
       The uploader accepts your CSV with these headers (any order is fine):<br/>
       <em>
@@ -443,7 +443,7 @@
         // period text from the op-day key
         const nextDay = new Date(key + 'T00:00:00');
         nextDay.setDate(nextDay.getDate() + 1);
-        const periodStr = `${key} 08:00:00 `;
+        const periodStr = `${key}`;
 
         for (const r of rows) {
           const vrn = (r.vehicle_registration_number || '').toString();
