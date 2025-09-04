@@ -209,7 +209,14 @@
 
     // helpers
     const rupee = n => '₹' + Number(n||0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-    const ymd = d => d.toISOString().slice(0,10);
+
+    // Local-only YYYY-MM-DD (no UTC conversion)
+    const ymd = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
 
     function toISO(s){
       if (s == null || s === "") return null;
@@ -238,17 +245,23 @@
       return isNaN(n) ? null : n;
     }
 
+    // Build op-day label in LOCAL time
     function opDayLabelFor(ts){
-      const d = new Date(ts);
+      const d = new Date(ts);                 // DB ISO -> local
       const eight = new Date(d); eight.setHours(8,0,0,0);
-      if (d < eight) { const prev = new Date(d); prev.setDate(prev.getDate()-1); prev.setHours(0,0,0,0); return ymd(prev); }
-      const cur = new Date(d); cur.setHours(0,0,0,0); return ymd(cur);
+      if (d < eight) {
+        const prev = new Date(d); prev.setDate(prev.getDate()-1); prev.setHours(0,0,0,0);
+        return ymd(prev);
+      }
+      const cur = new Date(d); cur.setHours(0,0,0,0);
+      return ymd(cur);
     }
 
+    // Build query window (local → UTC for DB)
     function opDayWindowFor(dateYmd){
-      const base = new Date(dateYmd + 'T00:00:00');
-      const start = new Date(base); start.setHours(8,0,0,0);
-      const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999);
+      const base = new Date(dateYmd + 'T00:00:00'); // local midnight
+      const start = new Date(base); start.setHours(8,0,0,0);  // 08:00 local
+      const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999); // next day 07:59:59.999 local
       return { start, end };
     }
 
@@ -330,7 +343,7 @@
         },
         error: (e) => {
           info.textContent = 'CSV parse error.';
-          errBox.textContent = String(e?.message || e);
+          document.getElementById('errorBox').textContent = String(e?.message || e);
         }
       });
     };
@@ -342,6 +355,7 @@
       const to = document.getElementById('toDate').value;
       if(!from || !to){ alert('Select dates'); return; }
 
+      // Build UTC window for DB query (correct)
       const { start: globalStart } = opDayWindowFor(from);
       const { end: globalEnd } = opDayWindowFor(to);
 
@@ -356,6 +370,7 @@
 
       if(error){ alert('Fetch failed: ' + error.message); return; }
 
+      // Group into operational days using LOCAL labels
       const byOp = new Map();
       for(const r of data){
         const lbl = opDayLabelFor(r.transaction_processed_time);
@@ -363,75 +378,74 @@
         byOp.get(lbl).push(r);
       }
 
+      // Build labels in LOCAL time
       const labels = [];
       {
-        const d = new Date(from + 'T00:00:00');
-        const toD = new Date(to + 'T00:00:00');
-        while(d <= toD){ labels.push(ymd(d)); d.setDate(d.getDate()+1); }
+        const d = new Date(from + 'T00:00:00');  // local midnight
+        const toD = new Date(to + 'T00:00:00');  // local midnight
+        while(d <= toD){
+          labels.push(ymd(d));
+          d.setDate(d.getDate()+1);
+        }
       }
 
       const keptRows = [];
-const omittedRows = [];
-const dailyRows = [];
+      const omittedRows = [];
+      const dailyRows = [];
 
-for (const lbl of labels) {
-  // rows for this operational day
-  const rows = (byOp.get(lbl) || []).slice();
+      for (const lbl of labels) {
+        const rows = (byOp.get(lbl) || []).slice();
 
-  // Always process in chronological order for that day
-  rows.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
+        // process in chronological order
+        rows.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
 
-  // Per-vehicle counters for THIS day
-  const perVeh = new Map();
+        const perVeh = new Map();
+        let total_txn = rows.length;
+        let qualified = 0, singles = 0, returns = 0, omitted = 0;
 
-  let total_txn = rows.length;
-  let qualified = 0, singles = 0, returns = 0, omitted = 0;
+        const nextDay = new Date(lbl + 'T00:00:00');
+        nextDay.setDate(nextDay.getDate() + 1);
+        const periodStr = `${lbl} 08:00:00 to ${ymd(nextDay)} 07:59:59`;
 
-  const nextDay = new Date(lbl + 'T00:00:00'); 
-  nextDay.setDate(nextDay.getDate() + 1);
-  const periodStr = `${lbl} 08:00:00 to ${nextDay.toISOString().slice(0,10)} 07:59:59`;
+        for (const r of rows) {
+          const vrn = (r.vehicle_registration_number || '').toString();
+          const now = (perVeh.get(vrn) || 0) + 1;
+          perVeh.set(vrn, now);
 
-  // Walk the day in time order and count per vehicle
-  for (const r of rows) {
-    const vrn = (r.vehicle_registration_number || '').toString();
-    const soFar = perVeh.get(vrn) || 0;
-    const now = soFar + 1;
-    perVeh.set(vrn, now);
+          if (now <= 2) {
+            qualified++;
+            const journey = (now % 2 === 1) ? 'Single Journey' : 'Return Journey';
+            if (journey === 'Single Journey') singles++; else returns++;
+            keptRows.push({
+              TransactionProcessedTime: r.transaction_processed_time,
+              VehicleRegistrationNumber: r.vehicle_registration_number,
+              MapperVehicleClass: r.mapper_vehicle_class,
+              TransactionAmount: r.transaction_amount,
+              Journey_Type: journey
+            });
+          } else {
+            omitted++;
+            omittedRows.push({
+              TransactionProcessedTime: r.transaction_processed_time,
+              VehicleRegistrationNumber: r.vehicle_registration_number,
+              MapperVehicleClass: r.mapper_vehicle_class,
+              TransactionAmount: r.transaction_amount,
+              txn_no: now
+            });
+          }
+        }
 
-    if (now <= 2) {
-      qualified++;
-      const journey = (now % 2 === 1) ? 'Single Journey' : 'Return Journey';
-      if (journey === 'Single Journey') singles++; else returns++;
-      keptRows.push({
-        TransactionProcessedTime: r.transaction_processed_time,
-        VehicleRegistrationNumber: r.vehicle_registration_number,
-        MapperVehicleClass: r.mapper_vehicle_class,
-        TransactionAmount: r.transaction_amount,
-        Journey_Type: journey
-      });
-    } else {
-      omitted++;
-      omittedRows.push({
-        TransactionProcessedTime: r.transaction_processed_time,
-        VehicleRegistrationNumber: r.vehicle_registration_number,
-        MapperVehicleClass: r.mapper_vehicle_class,
-        TransactionAmount: r.transaction_amount,
-        txn_no: now
-      });
-    }
-  }
-
-  const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
-  dailyRows.push({
-    period: periodStr,
-    total_txn,
-    qualified_txn: qualified,
-    total_single: singles,
-    total_return: returns,
-    compensation: comp,
-    omitted
-  });
-}
+        const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
+        dailyRows.push({
+          period: periodStr,
+          total_txn,
+          qualified_txn: qualified,
+          total_single: singles,
+          total_return: returns,
+          compensation: comp,
+          omitted
+        });
+      }
 
       const tot = {
         period:'TOTAL',
