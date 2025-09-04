@@ -371,53 +371,67 @@
       }
 
       const keptRows = [];
-      const omittedRows = [];
-      const dailyRows = [];
+const omittedRows = [];
+const dailyRows = [];
 
-      for(const lbl of labels){
-        const rows = (byOp.get(lbl) || []);
-        let currentVRN = null, count = 0;
-        let total_txn = rows.length;
-        let qualified=0, singles=0, returns=0, omitted=0;
+for (const lbl of labels) {
+  // rows for this operational day
+  const rows = (byOp.get(lbl) || []).slice();
 
-        const nextDay = new Date(lbl + 'T00:00:00'); nextDay.setDate(nextDay.getDate()+1);
-        const periodStr = `${lbl} 08:00:00 to ${ymd(nextDay)} 07:59:59`;
+  // Always process in chronological order for that day
+  rows.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
 
-        for(const r of rows){
-          if(r.vehicle_registration_number !== currentVRN){
-            currentVRN = r.vehicle_registration_number; count = 0;
-          }
-          count += 1;
-          if(count <= 2){
-            qualified++;
-            const journey = (count % 2 === 1) ? 'Single Journey' : 'Return Journey';
-            if(journey === 'Single Journey') singles++; else returns++;
-            keptRows.push({
-              TransactionProcessedTime: r.transaction_processed_time,
-              VehicleRegistrationNumber: r.vehicle_registration_number,
-              MapperVehicleClass: r.mapper_vehicle_class,
-              TransactionAmount: r.transaction_amount,
-              Journey_Type: journey
-            });
-          }else{
-            omitted++;
-            omittedRows.push({
-              TransactionProcessedTime: r.transaction_processed_time,
-              VehicleRegistrationNumber: r.vehicle_registration_number,
-              MapperVehicleClass: r.mapper_vehicle_class,
-              TransactionAmount: r.transaction_amount,
-              txn_no: count
-            });
-          }
-        }
-        const comp = singles*SINGLE_FARE + returns*RETURN_FARE;
-        dailyRows.push({
-          period: periodStr,
-          total_txn, qualified_txn: qualified,
-          total_single: singles, total_return: returns,
-          compensation: comp, omitted
-        });
-      }
+  // Per-vehicle counters for THIS day
+  const perVeh = new Map();
+
+  let total_txn = rows.length;
+  let qualified = 0, singles = 0, returns = 0, omitted = 0;
+
+  const nextDay = new Date(lbl + 'T00:00:00'); 
+  nextDay.setDate(nextDay.getDate() + 1);
+  const periodStr = `${lbl} 08:00:00 to ${nextDay.toISOString().slice(0,10)} 07:59:59`;
+
+  // Walk the day in time order and count per vehicle
+  for (const r of rows) {
+    const vrn = (r.vehicle_registration_number || '').toString();
+    const soFar = perVeh.get(vrn) || 0;
+    const now = soFar + 1;
+    perVeh.set(vrn, now);
+
+    if (now <= 2) {
+      qualified++;
+      const journey = (now % 2 === 1) ? 'Single Journey' : 'Return Journey';
+      if (journey === 'Single Journey') singles++; else returns++;
+      keptRows.push({
+        TransactionProcessedTime: r.transaction_processed_time,
+        VehicleRegistrationNumber: r.vehicle_registration_number,
+        MapperVehicleClass: r.mapper_vehicle_class,
+        TransactionAmount: r.transaction_amount,
+        Journey_Type: journey
+      });
+    } else {
+      omitted++;
+      omittedRows.push({
+        TransactionProcessedTime: r.transaction_processed_time,
+        VehicleRegistrationNumber: r.vehicle_registration_number,
+        MapperVehicleClass: r.mapper_vehicle_class,
+        TransactionAmount: r.transaction_amount,
+        txn_no: now
+      });
+    }
+  }
+
+  const comp = singles * SINGLE_FARE + returns * RETURN_FARE;
+  dailyRows.push({
+    period: periodStr,
+    total_txn,
+    qualified_txn: qualified,
+    total_single: singles,
+    total_return: returns,
+    compensation: comp,
+    omitted
+  });
+}
 
       const tot = {
         period:'TOTAL',
