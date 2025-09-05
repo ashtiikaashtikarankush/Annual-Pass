@@ -563,83 +563,84 @@
 
       // Build ONE combined "Summary" sheet (Overall + Daily)
       function buildSummarySheet({summary, dailyRows, tot}) {
-        // columns & widths (first column wide for Period area later)
-        const widths = [260, 180, 160, 200, 160, 180, 200];
+  // columns & widths (first column was wide — reduced here)
+  // tweak these numbers (units are Excel column width) to get the exact appearance you want.
+  const widths = [120, 90, 80, 90, 80, 100, 90];
 
-        // ---- Overall Summary section
-        const titleOverall = row( cell({ v:'Overall Summary', style:'sTitle' }) );
-        const overallHeader = row(
-          cell({v:'Period', style:'sHead'}) +
-          cell({v:'Total Single Journeys', style:'sHead'}) +
-          cell({v:'Single Fare (B)', style:'sHead'}) +
-          cell({v:'Total Return Journeys', style:'sHead'}) +
-          cell({v:'Return Fare (D)', style:'sHead'}) +
-          cell({v:'Total Compensation', style:'sHead'}) +
-          cell({v:'Omitted Transactions (3rd+)', style:'sHead'})
-        );
-        const overallData = row(
-          cell({v:summary.period, style:'sTxt'}) +
-          cell({v:Number(summary.total_single), type:'Number', style:'sNum'}) +
-          cell({v:Number(summary.single_fare), type:'Number', style:'sCur'}) +
-          cell({v:Number(summary.total_return), type:'Number', style:'sNum'}) +
-          cell({v:Number(summary.return_fare), type:'Number', style:'sCur'}) +
-          cell({v:Number(summary.total_comp), type:'Number', style:'sCur'}) +
-          cell({v:Number(summary.omitted), type:'Number', style:'sNum'})
-        );
+  // ---- Overall Summary section
+  const titleOverall = row( cell({ v:'Overall Summary', style:'sTitle' }) );
+  const overallHeader = row(
+    cell({v:'Period', style:'sHead'}) +
+    cell({v:'Total Single Journeys', style:'sHead'}) +
+    cell({v:'Single Fare (B)', style:'sHead'}) +
+    cell({v:'Total Return Journeys', style:'sHead'}) +
+    cell({v:'Return Fare (D)', style:'sHead'}) +
+    cell({v:'Total Compensation', style:'sHead'}) +
+    cell({v:'Omitted Transactions (3rd+)', style:'sHead'})
+  );
+  const overallData = row(
+    cell({v:summary.period, style:'sTxt'}) +
+    cell({v:Number(summary.total_single), type:'Number', style:'sNum'}) +
+    cell({v:Number(summary.single_fare), type:'Number', style:'sCur'}) +
+    cell({v:Number(summary.total_return), type:'Number', style:'sNum'}) +
+    cell({v:Number(summary.return_fare), type:'Number', style:'sCur'}) +
+    cell({v:Number(summary.total_comp), type:'Number', style:'sCur'}) +
+    cell({v:Number(summary.omitted), type:'Number', style:'sNum'})
+  );
 
-        const blank = row( cell({v:''}) );
+  const blank = row( cell({v:''}) );
 
-        // ---- Daily Summary section (with TOTAL row)
-        const titleDaily = row( cell({ v:'Daily Summary', style:'sTitle' }) );
+  // ---- Daily Summary section (with TOTAL row)
+  const titleDaily = row( cell({ v:'Daily Summary', style:'sTitle' }) );
 
-        const dailyHeader = row(
-          cell({v:'Period', style:'sHead'}) +
-          cell({v:'Total Annual Pass Transactions', style:'sHead'}) +
-          cell({v:'Total Qualified Transactions', style:'sHead'}) +
-          cell({v:'Total Single Journeys', style:'sHead'}) +
-          cell({v:'Total Return Journeys', style:'sHead'}) +
-          cell({v:'Total Compensation', style:'sHead'}) +
-          cell({v:'Omitted Transactions', style:'sHead'})
-        );
+  const dailyHeader = row(
+    cell({v:'Period', style:'sHead'}) +
+    cell({v:'Total Annual Pass Transactions', style:'sHead'}) +
+    cell({v:'Total Qualified Transactions', style:'sHead'}) +
+    cell({v:'Total Single Journeys', style:'sHead'}) +
+    cell({v:'Total Return Journeys', style:'sHead'}) +
+    cell({v:'Total Compensation', style:'sHead'}) +
+    cell({v:'Omitted Transactions', style:'sHead'})
+  );
 
-        const dailyBody = dailyRows.map(r => row(
-          cell({v:r.period, style:'sTxt'}) +
-          cell({v:Number(r.total_txn), type:'Number', style:'sNum'}) +
-          cell({v:Number(r.qualified_txn), type:'Number', style:'sNum'}) +
-          cell({v:Number(r.total_single), type:'Number', style:'sNum'}) +
-          cell({v:Number(r.total_return), type:'Number', style:'sNum'}) +
-          cell({v:Number(r.compensation), type:'Number', style:'sCur'}) +
-          cell({v:Number(r.omitted), type:'Number', style:'sNum'})
-        )).join('');
+  const dailyBody = dailyRows.map(r => row(
+    cell({v:r.period, style:'sTxt'}) +
+    cell({v:Number(r.total_txn), type:'Number', style:'sNum'}) +
+    cell({v:Number(r.qualified_txn), type:'Number', style:'sNum'}) +
+    cell({v:Number(r.total_single), type:'Number', style:'sNum'}) +
+    cell({v:Number(r.total_return), type:'Number', style:'sNum'}) +
+    cell({v:Number(r.compensation), type:'Number', style:'sCur'}) +
+    cell({v:Number(r.omitted), type:'Number', style:'sNum'})
+  )).join('');
 
-        const dailyTotal = row(
-          cell({v:'TOTAL', style:'sHead'}) +
-          cell({v:Number(tot.total_txn), type:'Number', style:'sNumBold'}) +
-          cell({v:Number(tot.qualified_txn), type:'Number', style:'sNumBold'}) +
-          cell({v:Number(tot.total_single), type:'Number', style:'sNumBold'}) +
-          cell({v:Number(tot.total_return), type:'Number', style:'sNumBold'}) +
-          cell({v:Number(tot.compensation), type:'Number', style:'sCurBold'}) +
-          cell({v:Number(tot.omitted), type:'Number', style:'sNumBold'})
-        );
+  const dailyTotal = row(
+    cell({v:'TOTAL', style:'sHead'}) +
+    cell({v:Number(tot.total_txn), type:'Number', style:'sNumBold'}) +
+    cell({v:Number(tot.qualified_txn), type:'Number', style:'sNumBold'}) +
+    cell({v:Number(tot.total_single), type:'Number', style:'sNumBold'}) +
+    cell({v:Number(tot.total_return), type:'Number', style:'sNumBold'}) +
+    cell({v:Number(tot.compensation), type:'Number', style:'sCurBold'}) +
+    cell({v:Number(tot.omitted), type:'Number', style:'sNumBold'})
+  );
 
-        const colsXml = widths.map(w => `<Column ss:Width="${w}"/>`).join('');
+  const colsXml = widths.map(w => `<Column ss:Width="${w}"/>`).join('');
 
-        return `
-          <Worksheet ss:Name="Summary">
-            <Table>
-              ${colsXml}
-              ${titleOverall}
-              ${overallHeader}
-              ${overallData}
-              ${blank}
-              ${titleDaily}
-              ${dailyHeader}
-              ${dailyBody}
-              ${dailyTotal}
-            </Table>
-          </Worksheet>
-        `;
-      }
+  return `
+    <Worksheet ss:Name="Summary">
+      <Table>
+        ${colsXml}
+        ${titleOverall}
+        ${overallHeader}
+        ${overallData}
+        ${blank}
+        ${titleDaily}
+        ${dailyHeader}
+        ${dailyBody}
+        ${dailyTotal}
+      </Table>
+    </Worksheet>
+  `;
+}
 
       function buildListSheet({name, rows, columns}) {
         const colsXml = columns.map(c => `<Column ss:Width="${c.w || 120}"/>`).join('');
