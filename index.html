@@ -700,29 +700,39 @@
 
         // Kept Transactions sheet
         const keptSheet = buildListSheet({
-          name: 'Kept Transactions',
-          rows: keptRows || [],
-          columns: [
-            { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
-            { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
-            { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
-            { h:'Amount', a:'TransactionAmount', t:'c', w:110 },
-            { h:'Journey Type', a:'Journey_Type', t:'s', w:120 },
-          ]
-        });
+  name: 'Kept Transactions',
+  rows: keptRows || [],
+  columns: [
+    { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
+    { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
+    { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
+    { 
+      h:'Amount', 
+      a:r => (r.Journey_Type === 'Single Journey' ? 110 : 55),  // ✅ override amount
+      t:'c', 
+      w:110 
+    },
+    { h:'Journey Type', a:'Journey_Type', t:'s', w:120 },
+  ]
+});
 
         // Omitted Transactions sheet
         const omitSheet = buildListSheet({
-          name: 'Omitted Transactions',
-          rows: omittedRows || [],
-          columns: [
-            { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
-            { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
-            { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
-            { h:'Amount', a:'TransactionAmount', t:'c', w:110 },
-            { h:'Txn No', a:'txn_no', t:'n', w:80 },
-          ]
-        });
+  name: 'Omitted Transactions',
+  rows: omittedRows || [],
+  columns: [
+    { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
+    { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
+    { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
+    { 
+      h:'Amount', 
+      a:() => 0,   // ✅ always 0 for omitted transactions
+      t:'c', 
+      w:110 
+    },
+    { h:'Txn No', a:'txn_no', t:'n', w:80 },
+  ]
+});
 
         const xml =
 `<?xml version="1.0"?>
