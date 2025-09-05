@@ -569,15 +569,15 @@
 
   // ---- Overall Summary section
   const titleOverall = row( cell({ v:'Overall Summary', style:'sTitle' }) );
-  const overallHeader = row(
-    cell({v:'Period', style:'sHead'}) +
-    cell({v:'Total Single Journeys', style:'sHead'}) +
-    cell({v:'Single Fare (B)', style:'sHead'}) +
-    cell({v:'Total Return Journeys', style:'sHead'}) +
-    cell({v:'Return Fare (D)', style:'sHead'}) +
-    cell({v:'Total Compensation', style:'sHead'}) +
-    cell({v:'Omitted Transactions (3rd+)', style:'sHead'})
-  );
+  const overallHeader = '<Row ss:AutoFitHeight="1">' +
+  cell({v:'Period', style:'sHead'}) +
+  cell({v:'Total Single Journeys', style:'sHead'}) +
+  cell({v:'Single Fare (B)', style:'sHead'}) +
+  cell({v:'Total Return Journeys', style:'sHead'}) +
+  cell({v:'Return Fare (D)', style:'sHead'}) +
+  cell({v:'Total Compensation', style:'sHead'}) +
+  cell({v:'Omitted Transactions (3rd+)', style:'sHead'}) +
+  '</Row>';
   const overallData = row(
     cell({v:summary.period, style:'sTxt'}) +
     cell({v:Number(summary.total_single), type:'Number', style:'sNum'}) +
@@ -593,15 +593,15 @@
   // ---- Daily Summary section (with TOTAL row)
   const titleDaily = row( cell({ v:'Daily Summary', style:'sTitle' }) );
 
-  const dailyHeader = row(
-    cell({v:'Period', style:'sHead'}) +
-    cell({v:'Total Annual Pass Transactions', style:'sHead'}) +
-    cell({v:'Total Qualified Transactions', style:'sHead'}) +
-    cell({v:'Total Single Journeys', style:'sHead'}) +
-    cell({v:'Total Return Journeys', style:'sHead'}) +
-    cell({v:'Total Compensation', style:'sHead'}) +
-    cell({v:'Omitted Transactions', style:'sHead'})
-  );
+  const dailyHeader = '<Row ss:AutoFitHeight="1">' +
+  cell({v:'Period', style:'sHead'}) +
+  cell({v:'Total Annual Pass Transactions', style:'sHead'}) +
+  cell({v:'Total Qualified Transactions', style:'sHead'}) +
+  cell({v:'Total Single Journeys', style:'sHead'}) +
+  cell({v:'Total Return Journeys', style:'sHead'}) +
+  cell({v:'Total Compensation', style:'sHead'}) +
+  cell({v:'Omitted Transactions', style:'sHead'}) +
+  '</Row>';
 
   const dailyBody = dailyRows.map(r => row(
     cell({v:r.period, style:'sTxt'}) +
@@ -644,7 +644,7 @@
 
       function buildListSheet({name, rows, columns}) {
         const colsXml = columns.map(c => `<Column ss:Width="${c.w || 120}"/>`).join('');
-        const header = row(columns.map(c => cell({v:c.h, style:'sHead'})).join(''));
+        const header = '<Row ss:AutoFitHeight="1">' + columns.map(c => cell({v:c.h, style:'sHead'})).join('') + '</Row>';
         const body = rows.map(r => row(columns.map(c => {
           const val = typeof c.a === 'function' ? c.a(r) : r[c.a];
           if (c.t === 'n') return cell({v:Number(val ?? 0), type:'Number', style: c.s || 'sNum'});
@@ -664,36 +664,39 @@
 
       function buildWorkbookXml({summary, dailyRows, tot, keptRows, omittedRows}) {
         const styles = `
-          <Styles>
-            <Style ss:ID="sHead">
-              <Font ss:Bold="1"/>
-              <Interior ss:Color="#D9E1F2" ss:Pattern="Solid"/>
-              <Borders>
-                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
-              </Borders>
-            </Style>
-            <Style ss:ID="sTitle">
-              <Font ss:Bold="1" ss:Size="12"/>
-            </Style>
-            <Style ss:ID="sTxt">
-              <Alignment ss:Vertical="Center"/>
-            </Style>
-            <Style ss:ID="sNum">
-              <NumberFormat ss:Format="#,##0"/>
-            </Style>
-            <Style ss:ID="sNumBold">
-              <Font ss:Bold="1"/>
-              <NumberFormat ss:Format="#,##0"/>
-            </Style>
-            <Style ss:ID="sCur">
-              <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
-            </Style>
-            <Style ss:ID="sCurBold">
-              <Font ss:Bold="1"/>
-              <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
-            </Style>
-          </Styles>
-        `;
+  <Styles>
+    <Style ss:ID="sHead">
+      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
+      <Font ss:Bold="1"/>
+      <Interior ss:Color="#D9E1F2" ss:Pattern="Solid"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
+      </Borders>
+    </Style>
+    <Style ss:ID="sTitle">
+      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
+      <Font ss:Bold="1" ss:Size="12"/>
+    </Style>
+    <Style ss:ID="sTxt">
+      <Alignment ss:Vertical="Center"/>
+    </Style>
+    <Style ss:ID="sNum">
+      <NumberFormat ss:Format="#,##0"/>
+    </Style>
+    <Style ss:ID="sNumBold">
+      <Font ss:Bold="1"/>
+      <NumberFormat ss:Format="#,##0"/>
+    </Style>
+    <Style ss:ID="sCur">
+      <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
+    </Style>
+    <Style ss:ID="sCurBold">
+      <Alignment ss:Vertical="Center"/>
+      <Font ss:Bold="1"/>
+      <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
+    </Style>
+  </Styles>
+`;
 
         // Kept Transactions sheet
         const keptSheet = buildListSheet({
