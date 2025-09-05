@@ -303,9 +303,9 @@
           const { data, error, count } = await supabase
             .from('pass_transactions')
             .select(
-              'vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount',
-              { count: 'exact' }
-            )
+  'vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount, cch_transaction_id',
+  { count: 'exact' }
+)
             .gte('transaction_processed_time', startISO)
             .lte('transaction_processed_time', endISO)
             .eq('transaction_amount', 15)
@@ -436,21 +436,23 @@
               const journey = (now % 2 === 1) ? 'Single Journey' : 'Return Journey';
               if (journey === 'Single Journey') singles++; else returns++;
               keptRows.push({
-                TransactionProcessedTime: r.transaction_processed_time,
-                VehicleRegistrationNumber: r.vehicle_registration_number,
-                MapperVehicleClass: r.mapper_vehicle_class,
-                TransactionAmount: r.transaction_amount,
-                Journey_Type: journey
-              });
+  TransactionProcessedTime: r.transaction_processed_time,
+  VehicleRegistrationNumber: r.vehicle_registration_number,
+  MapperVehicleClass: r.mapper_vehicle_class,
+  TransactionAmount: r.transaction_amount,
+  Journey_Type: journey,
+  CCH_Transaction_ID: r.cch_transaction_id
+});
             } else {
               omitted++;
               omittedRows.push({
-                TransactionProcessedTime: r.transaction_processed_time,
-                VehicleRegistrationNumber: r.vehicle_registration_number,
-                MapperVehicleClass: r.mapper_vehicle_class,
-                TransactionAmount: r.transaction_amount,
-                txn_no: now
-              });
+  TransactionProcessedTime: r.transaction_processed_time,
+  VehicleRegistrationNumber: r.vehicle_registration_number,
+  MapperVehicleClass: r.mapper_vehicle_class,
+  TransactionAmount: r.transaction_amount,
+  txn_no: now,
+  CCH_Transaction_ID: r.cch_transaction_id
+});
             }
           }
 
@@ -703,17 +705,18 @@
   name: 'Kept Transactions',
   rows: keptRows || [],
   columns: [
-    { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
-    { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
-    { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
-    { 
-      h:'Amount', 
-      a:r => (r.Journey_Type === 'Single Journey' ? 110 : 55),  // ✅ override amount
-      t:'c', 
-      w:110 
-    },
-    { h:'Journey Type', a:'Journey_Type', t:'s', w:120 },
-  ]
+  { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
+  { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
+  { h:'CCH Transaction ID', a:'CCH_Transaction_ID', t:'s', w:140 },            // <-- new
+  { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
+  { 
+    h:'Amount', 
+    a:r => (r.Journey_Type === 'Single Journey' ? 110 : 55),  // override amount
+    t:'c', 
+    w:110 
+  },
+  { h:'Journey Type', a:'Journey_Type', t:'s', w:120 },
+]
 });
 
         // Omitted Transactions sheet
@@ -721,17 +724,18 @@
   name: 'Omitted Transactions',
   rows: omittedRows || [],
   columns: [
-    { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
-    { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
-    { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
-    { 
-      h:'Amount', 
-      a:() => 0,   // ✅ always 0 for omitted transactions
-      t:'c', 
-      w:110 
-    },
-    { h:'Txn No', a:'txn_no', t:'n', w:80 },
-  ]
+  { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
+  { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
+  { h:'CCH Transaction ID', a:'CCH_Transaction_ID', t:'s', w:140 },            // <-- new
+  { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
+  { 
+    h:'Amount', 
+    a:() => 0,   // always 0 for omitted transactions
+    t:'c', 
+    w:110 
+  },
+  { h:'Txn No', a:'txn_no', t:'n', w:80 },
+]
 });
 
         const xml =
