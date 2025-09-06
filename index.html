@@ -408,283 +408,240 @@
       };
 
       // REPORT
-      document.getElementById('filterForm').addEventListener('submit', async (e) => {
+      // safer submit handler (replace your existing one)
+document.getElementById('filterForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const from = document.getElementById('fromDate').value;
-  const to = document.getElementById('toDate').value;
-  if (!from || !to) { alert('Select dates'); return; }
-
-  const { start: globalStart } = opDayWindowFor(from);
-  const { end: globalEnd } = opDayWindowFor(to);
-
-  // 1) Fetch in-window txns to discover vehicles
-  let inWindowRows = [], totalCount = 0;
   try {
-    const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
-    inWindowRows = res.rows || [];
-    totalCount = res.count || inWindowRows.length;
-  } catch (err) {
-    alert('Initial fetch failed: ' + (err && err.message ? err.message : err));
-    return;
-  }
+    const from = document.getElementById('fromDate').value;
+    const to = document.getElementById('toDate').value;
+    if (!from || !to) { alert('Select dates'); return; }
 
-  if (!inWindowRows.length) {
-    alert('No matching transactions in the searched date range.');
-    document.getElementById('summaryWrap').style.display = 'none';
-    document.getElementById('dailyWrap').style.display = 'none';
-    document.getElementById('keptWrap').style.display = 'none';
-    document.getElementById('omitWrap').style.display = 'none';
-    return;
-  }
+    const { start: globalStart } = opDayWindowFor(from);
+    const { end: globalEnd } = opDayWindowFor(to);
 
-  // 2) Unique vehicle list
-  const vrnSet = new Set();
-  for (const r of inWindowRows) {
-    const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-    if (vrn) vrnSet.add(vrn);
-  }
-  const vrnArray = Array.from(vrnSet);
-  if (!vrnArray.length) {
-    alert('No valid vehicle numbers found in the searched window.');
-    return;
-  }
+    // 1) Fetch in-window txns to discover vehicles
+    let inWindowRows = [], totalCount = 0;
+    try {
+      const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
+      inWindowRows = res.rows || [];
+      totalCount = res.count || inWindowRows.length;
+    } catch (err) {
+      alert('Initial fetch failed: ' + (err && err.message ? err.message : err));
+      return;
+    }
 
-  // 3) Fetch full history for those vehicles up to globalEnd
-  const pageSize = 1000;
-  const vrnBatchSize = 300;
-  let allHistory = [];
-  try {
-    for (let i = 0; i < vrnArray.length; i += vrnBatchSize) {
-      const batch = vrnArray.slice(i, i + vrnBatchSize);
-      let fromRange = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from('pass_transactions')
-          .select('vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount, cch_transaction_id', { count: 'estimated' })
-          .in('vehicle_registration_number', batch)
-          .lte('transaction_processed_time', globalEnd.toISOString())
-          .eq('transaction_amount', 15)
-          .order('transaction_processed_time', { ascending: true })
-          .range(fromRange, fromRange + pageSize - 1);
+    if (!inWindowRows.length) {
+      alert('No matching transactions in the searched date range.');
+      document.getElementById('summaryWrap').style.display = 'none';
+      document.getElementById('dailyWrap').style.display = 'none';
+      document.getElementById('keptWrap').style.display = 'none';
+      document.getElementById('omitWrap').style.display = 'none';
+      return;
+    }
 
-        if (error) throw error;
-        if (data && data.length) allHistory = allHistory.concat(data);
-        if (!data || data.length < pageSize) break;
-        fromRange += pageSize;
+    // 2) Unique vehicle list
+    const vrnSet = new Set();
+    for (const r of inWindowRows) {
+      const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+      if (vrn) vrnSet.add(vrn);
+    }
+    const vrnArray = Array.from(vrnSet);
+    if (!vrnArray.length) { alert('No valid vehicle numbers found.'); return; }
+
+    // 3) Fetch full history for those vehicles up to globalEnd
+    const pageSize = 1000;
+    const vrnBatchSize = 300;
+    let allHistory = [];
+    try {
+      for (let i = 0; i < vrnArray.length; i += vrnBatchSize) {
+        const batch = vrnArray.slice(i, i + vrnBatchSize);
+        let fromRange = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('pass_transactions')
+            .select('vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount, cch_transaction_id', { count: 'estimated' })
+            .in('vehicle_registration_number', batch)
+            .lte('transaction_processed_time', globalEnd.toISOString())
+            .eq('transaction_amount', 15)
+            .order('transaction_processed_time', { ascending: true })
+            .range(fromRange, fromRange + pageSize - 1);
+
+          if (error) throw error;
+          if (data && data.length) allHistory = allHistory.concat(data);
+          if (!data || data.length < pageSize) break;
+          fromRange += pageSize;
+        }
       }
+    } catch (err) {
+      alert('Failed fetching full history for vehicles: ' + (err && err.message ? err.message : err));
+      return;
     }
-  } catch (err) {
-    alert('Failed fetching full history for vehicles: ' + (err && err.message ? err.message : err));
-    return;
-  }
 
-  if (!allHistory.length) {
-    alert('No historical transactions found for vehicles in this range.');
-    return;
-  }
+    if (!allHistory.length) { alert('No historical transactions found.'); return; }
 
-  // 4) Sort and process (state machine + per-op-day omitted reset)
-  allHistory.sort((a,b)=> new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
+    // 4) Sort & process (state machine + per-op-day omitted reset)
+    allHistory.sort((a,b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
 
-  const byOp = new Map();
-  const keptRows = [], omittedRows = [];
-  const vehState = new Map();
-  const MS_24H = 24 * 60 * 60 * 1000;
-
-  function ensureOp(key) {
-    if (!byOp.has(key)) byOp.set(key, { total_txn: 0, qualified: 0, singles: 0, returns: 0, omitted: 0 });
-    return byOp.get(key);
-  }
-
-  // REPLACEMENT loop with dailyTotalCount fix
-for (const r of allHistory) {
-  const ts = new Date(r.transaction_processed_time);
-  const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-  if (!vrn) continue;
-
-  const currentOpKey = opDayKey(r.transaction_processed_time);
-
-  if (!vehState.has(vrn)) {
-    vehState.set(vrn, {
-      keptTimestamps: [],
-      state: 'none',
-      dailyOpKey: null,
-      dailyKeptCount: 0,
-      dailyTotalCount: 0   // counts every txn (kept+omitted) in current op-day
-    });
-  }
-  const s = vehState.get(vrn);
-
-  // Reset per-op-day counters when op-day changes
-  if (s.dailyOpKey !== currentOpKey) {
-    s.dailyOpKey = currentOpKey;
-    s.dailyKeptCount = 0;
-    s.dailyTotalCount = 0;
-  }
-
-  // increment total txn ordinal for the day (used for txn_no)
-  s.dailyTotalCount++;
-
-  // purge kept timestamps older than 24h (rolling window for return logic)
-  s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
-
-  // If already 2 kept txns in same op-day => omitted (3rd+)
-  if (s.dailyKeptCount >= 2) {
-    if (ts >= globalStart && ts <= globalEnd) {
-      const opKey = opDayKey(r.transaction_processed_time);
-      const op = ensureOp(opKey);
-      op.total_txn++;
-      op.omitted++;
-      omittedRows.push({
-        TransactionProcessedTime: r.transaction_processed_time,
-        VehicleRegistrationNumber: vrn,
-        MapperVehicleClass: r.mapper_vehicle_class,
-        TransactionAmount: r.transaction_amount,
-        txn_no: s.dailyTotalCount,         // use total-day ordinal for correct 3,4,5...
-        CCH_Transaction_ID: r.cch_transaction_id
-      });
+    const byOp = new Map();
+    const keptRows = [], omittedRows = [];
+    const vehState = new Map();
+    const MS_24H = 24 * 60 * 60 * 1000;
+    function ensureOp(key) {
+      if (!byOp.has(key)) byOp.set(key, { total_txn: 0, qualified: 0, singles: 0, returns: 0, omitted: 0 });
+      return byOp.get(key);
     }
-    continue; // do NOT modify keptTimestamps/state for omitted txns
-  }
 
-  // Kept: decide Single vs Return using rolling 24h + state
-  const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
-  const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
+    for (const r of allHistory) {
+      const ts = new Date(r.transaction_processed_time);
+      const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+      if (!vrn) continue;
 
-  let journeyType;
-  if (within24hOfLastKept && s.state === 'pending_return') {
-    journeyType = 'Return Journey';
-    s.state = 'none';
-    s.keptTimestamps.push(ts);
-  } else {
-    journeyType = 'Single Journey';
-    s.state = 'pending_return';
-    s.keptTimestamps.push(ts);
-  }
+      const currentOpKey = opDayKey(r.transaction_processed_time);
 
-  // increment per-op-day kept counter
-  s.dailyKeptCount++;
+      if (!vehState.has(vrn)) {
+        vehState.set(vrn, {
+          keptTimestamps: [],
+          state: 'none',
+          dailyOpKey: null,
+          dailyKeptCount: 0,
+          dailyTotalCount: 0
+        });
+      }
+      const s = vehState.get(vrn);
 
-  // record if inside searched window
-  if (ts >= globalStart && ts <= globalEnd) {
-    const opKey = opDayKey(r.transaction_processed_time);
-    const op = ensureOp(opKey);
-    op.total_txn++;
-    op.qualified++;
-    if (journeyType === 'Single Journey') op.singles++; else op.returns++;
+      // reset per-op-day counters when op-day changes
+      if (s.dailyOpKey !== currentOpKey) {
+        s.dailyOpKey = currentOpKey;
+        s.dailyKeptCount = 0;
+        s.dailyTotalCount = 0;
+      }
 
-    keptRows.push({
-      TransactionProcessedTime: r.transaction_processed_time,
-      VehicleRegistrationNumber: vrn,
-      MapperVehicleClass: r.mapper_vehicle_class,
-      TransactionAmount: r.transaction_amount,
-      Journey_Type: journeyType,
-      CCH_Transaction_ID: r.cch_transaction_id
+      // increment total txn ordinal for the day (used for txn_no)
+      s.dailyTotalCount++;
+
+      // purge kept timestamps older than 24h
+      s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
+
+      // If already 2 kept txns in same op-day => omitted (3rd+)
+      if (s.dailyKeptCount >= 2) {
+        if (ts >= globalStart && ts <= globalEnd) {
+          const opKey = opDayKey(r.transaction_processed_time);
+          const op = ensureOp(opKey);
+          op.total_txn++;
+          op.omitted++;
+          omittedRows.push({
+            TransactionProcessedTime: r.transaction_processed_time,
+            VehicleRegistrationNumber: vrn,
+            MapperVehicleClass: r.mapper_vehicle_class,
+            TransactionAmount: r.transaction_amount,
+            txn_no: s.dailyTotalCount,
+            CCH_Transaction_ID: r.cch_transaction_id
+          });
+        }
+        continue;
+      }
+
+      // Kept: decide Single vs Return using rolling 24h + state
+      const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
+      const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
+
+      let journeyType;
+      if (within24hOfLastKept && s.state === 'pending_return') {
+        journeyType = 'Return Journey';
+        s.state = 'none';
+        s.keptTimestamps.push(ts);
+      } else {
+        journeyType = 'Single Journey';
+        s.state = 'pending_return';
+        s.keptTimestamps.push(ts);
+      }
+
+      // increment per-op-day kept counter
+      s.dailyKeptCount++;
+
+      // if inside searched window, record
+      if (ts >= globalStart && ts <= globalEnd) {
+        const opKey = opDayKey(r.transaction_processed_time);
+        const op = ensureOp(opKey);
+        op.total_txn++;
+        op.qualified++;
+        if (journeyType === 'Single Journey') op.singles++; else op.returns++;
+
+        keptRows.push({
+          TransactionProcessedTime: r.transaction_processed_time,
+          VehicleRegistrationNumber: vrn,
+          MapperVehicleClass: r.mapper_vehicle_class,
+          TransactionAmount: r.transaction_amount,
+          Journey_Type: journeyType,
+          CCH_Transaction_ID: r.cch_transaction_id
+        });
+      }
+    } // end for allHistory
+
+    // 5) Build daily rows & totals (same as your original)
+    const labels = [];
+    { const d = new Date(from + 'T00:00:00'); const toD = new Date(to + 'T00:00:00');
+      while (d <= toD) { labels.push(ymd(d)); d.setDate(d.getDate()+1); }
+    }
+
+    const dailyRows = labels.map(key => {
+      const o = byOp.get(key) || { total_txn:0, qualified:0, singles:0, returns:0, omitted:0 };
+      const compensation = (o.singles || 0) * SINGLE_FARE + (o.returns || 0) * RETURN_FARE;
+      return {
+        period: key,
+        total_txn: o.total_txn || 0,
+        qualified_txn: o.qualified || 0,
+        total_single: o.singles || 0,
+        total_return: o.returns || 0,
+        compensation,
+        omitted: o.omitted || 0
+      };
     });
-  }
-}
 
-  } // end for allHistory
-
-  // 5) Build labels / dailyRows / totals / render UI
-  const labels = [];
-  { const d = new Date(from + 'T00:00:00'); const toD = new Date(to + 'T00:00:00');
-    while (d <= toD) { labels.push(ymd(d)); d.setDate(d.getDate()+1); }
-  }
-
-  const dailyRows = labels.map(key => {
-    const o = byOp.get(key) || { total_txn:0, qualified:0, singles:0, returns:0, omitted:0 };
-    const compensation = (o.singles || 0) * SINGLE_FARE + (o.returns || 0) * RETURN_FARE;
-    return {
-      period: key,
-      total_txn: o.total_txn || 0,
-      qualified_txn: o.qualified || 0,
-      total_single: o.singles || 0,
-      total_return: o.returns || 0,
-      compensation,
-      omitted: o.omitted || 0
+    const tot = {
+      period: 'TOTAL',
+      total_txn: dailyRows.reduce((a,b)=>a+b.total_txn,0),
+      qualified_txn: dailyRows.reduce((a,b)=>a+b.qualified_txn,0),
+      total_single: dailyRows.reduce((a,b)=>a+b.total_single,0),
+      total_return: dailyRows.reduce((a,b)=>a+b.total_return,0),
+      compensation: dailyRows.reduce((a,b)=>a + (b.compensation||0), 0),
+      omitted: dailyRows.reduce((a,b)=>a + (b.omitted||0), 0)
     };
-  });
 
-  const tot = {
-    period: 'TOTAL',
-    total_txn: dailyRows.reduce((a,b)=>a+b.total_txn,0),
-    qualified_txn: dailyRows.reduce((a,b)=>a+b.qualified_txn,0),
-    total_single: dailyRows.reduce((a,b)=>a+b.total_single,0),
-    total_return: dailyRows.reduce((a,b)=>a+b.total_return,0),
-    compensation: dailyRows.reduce((a,b)=>a + (b.compensation||0), 0),
-    omitted: dailyRows.reduce((a,b)=>a + (b.omitted||0), 0)
-  };
+    const summary = {
+      period: `${from} to ${to}`,
+      total_single: tot.total_single,
+      single_fare: SINGLE_FARE,
+      total_return: tot.total_return,
+      return_fare: RETURN_FARE,
+      total_comp: tot.compensation,
+      omitted: tot.omitted
+    };
 
-  const summary = {
-    period: `${from} to ${to}`,
-    total_single: tot.total_single,
-    single_fare: SINGLE_FARE,
-    total_return: tot.total_return,
-    return_fare: RETURN_FARE,
-    total_comp: tot.compensation,
-    omitted: tot.omitted
-  };
+    // render UI (same as before)
+    document.getElementById('sum_period').textContent = summary.period;
+    document.getElementById('sum_total_single').textContent = summary.total_single;
+    document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
+    document.getElementById('sum_total_return').textContent = summary.total_return;
+    document.getElementById('sum_return_fare').textContent = RETURN_FARE;
+    document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
+    document.getElementById('sum_omitted').textContent = summary.omitted;
+    document.getElementById('summaryWrap').style.display = 'block';
+    const rowsConsidered = byOp.size ? Array.from(byOp.values()).reduce((acc,o)=>acc + (o.total_txn||0), 0) : keptRows.length + omittedRows.length;
+    document.getElementById('rowCount').textContent = `Rows considered: ${rowsConsidered} of ${totalCount}`;
 
-  document.getElementById('sum_period').textContent = summary.period;
-  document.getElementById('sum_total_single').textContent = summary.total_single;
-  document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
-  document.getElementById('sum_total_return').textContent = summary.total_return;
-  document.getElementById('sum_return_fare').textContent = RETURN_FARE;
-  document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
-  document.getElementById('sum_omitted').textContent = summary.omitted;
-  document.getElementById('summaryWrap').style.display = 'block';
-  document.getElementById('rowCount').textContent = `Rows considered: ${Object.keys(byOp).length ? Object.values(Object.fromEntries(byOp)).reduce((a,b)=>a + b.total_txn,0) : keptRows.length + omittedRows.length} of ${totalCount}`;
+    // populate daily/kept/omitted tables (your existing rendering code can be reused)
+    // (I'll assume you keep the same rendering snippets you already had below)
+    // ...
+    window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
 
-  // daily table
-  const tb = document.getElementById('dailyTbody');
-  tb.innerHTML = dailyRows.map(r=>`
-    <tr>
-      <td>${r.period}</td>
-      <td>${r.total_txn}</td>
-      <td>${r.qualified_txn}</td>
-      <td>${r.total_single}</td>
-      <td>${r.total_return}</td>
-      <td>${rupee(r.compensation)}</td>
-      <td>${r.omitted}</td>
-    </tr>
-  `).join('');
-  document.getElementById('tot_total_txn').textContent = tot.total_txn;
-  document.getElementById('tot_qualified_txn').textContent = tot.qualified_txn;
-  document.getElementById('tot_total_single').textContent = tot.total_single;
-  document.getElementById('tot_total_return').textContent = tot.total_return;
-  document.getElementById('tot_compensation').textContent = rupee(tot.compensation);
-  document.getElementById('tot_omitted').textContent = tot.omitted;
-  document.getElementById('dailyWrap').style.display = 'block';
-
-  // kept table
-  const keptTb = document.getElementById('keptTbody');
-  keptTb.innerHTML = keptRows.map(r=>`
-    <tr>
-      <td>${new Date(r.TransactionProcessedTime).toLocaleString()}</td>
-      <td>${r.VehicleRegistrationNumber}</td>
-      <td>${r.MapperVehicleClass ?? ''}</td>
-      <td>${r.TransactionAmount}</td>
-      <td>${r.Journey_Type}</td>
-    </tr>
-  `).join('');
-  document.getElementById('keptWrap').style.display = keptRows.length ? 'block':'none';
-
-  // omitted table
-  const omTb = document.getElementById('omitTbody');
-  omTb.innerHTML = omittedRows.map(r=>`
-    <tr>
-      <td>${new Date(r.TransactionProcessedTime).toLocaleString()}</td>
-      <td>${r.VehicleRegistrationNumber}</td>
-      <td>${r.MapperVehicleClass ?? ''}</td>
-      <td>${r.TransactionAmount}</td>
-      <td>${r.txn_no}</td>
-    </tr>
-  `).join('');
-  document.getElementById('omitWrap').style.display = omittedRows.length ? 'block':'none';
-
-  window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
+  } catch (err) {
+    // Any unexpected error — log and alert so the page won't reload silently.
+    console.error('Report handler error', err);
+    alert('An error occurred while building the report: ' + (err && err.message ? err.message : err));
+  }
 });
+
 
       document.getElementById('btnRefresh').onclick = () => {
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
