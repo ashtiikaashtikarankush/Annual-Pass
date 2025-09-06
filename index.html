@@ -497,85 +497,91 @@
   }
 
   for (const r of allHistory) {
-    const ts = new Date(r.transaction_processed_time);
-    const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-    if (!vrn) continue;
+  const ts = new Date(r.transaction_processed_time);
+  const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+  if (!vrn) continue;
 
-    const currentOpKey = opDayKey(r.transaction_processed_time);
+  const currentOpKey = opDayKey(r.transaction_processed_time);
 
-    if (!vehState.has(vrn)) {
-      vehState.set(vrn, {
-        keptTimestamps: [],
-        state: 'none',
-        dailyOpKey: null,
-        dailyKeptCount: 0
-      });
-    }
-    const s = vehState.get(vrn);
+  if (!vehState.has(vrn)) {
+    vehState.set(vrn, {
+      keptTimestamps: [],
+      state: 'none',
+      dailyOpKey: null,
+      dailyKeptCount: 0,
+      dailyTotalCount: 0   // counts every txn (kept+omitted) in current op-day
+    });
+  }
+  const s = vehState.get(vrn);
 
-    // reset daily counter when op-day changes
-    if (s.dailyOpKey !== currentOpKey) {
-      s.dailyOpKey = currentOpKey;
-      s.dailyKeptCount = 0;
-    }
+  // Reset per-op-day counters when op-day changes
+  if (s.dailyOpKey !== currentOpKey) {
+    s.dailyOpKey = currentOpKey;
+    s.dailyKeptCount = 0;
+    s.dailyTotalCount = 0;
+  }
 
-    // purge kept timestamps older than 24h
-    s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
+  // increment total txn ordinal for the day (used for txn_no)
+  s.dailyTotalCount++;
 
-    // omitted decision uses dailyKeptCount (resets each op-day)
-    if (s.dailyKeptCount >= 2) {
-      if (ts >= globalStart && ts <= globalEnd) {
-        const opKey = opDayKey(r.transaction_processed_time);
-        const op = ensureOp(opKey);
-        op.total_txn++;
-        op.omitted++;
-        omittedRows.push({
-          TransactionProcessedTime: r.transaction_processed_time,
-          VehicleRegistrationNumber: vrn,
-          MapperVehicleClass: r.mapper_vehicle_class,
-          TransactionAmount: r.transaction_amount,
-          txn_no: s.dailyKeptCount + 1,
-          CCH_Transaction_ID: r.cch_transaction_id
-        });
-      }
-      continue; // do not change keptTimestamps/state for omitted txns
-    }
+  // purge kept timestamps older than 24h
+  s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
 
-    // kept: single/return logic (unchanged)
-    const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
-    const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
-
-    let journeyType;
-    if (within24hOfLastKept && s.state === 'pending_return') {
-      journeyType = 'Return Journey';
-      s.state = 'none';
-      s.keptTimestamps.push(ts);
-    } else {
-      journeyType = 'Single Journey';
-      s.state = 'pending_return';
-      s.keptTimestamps.push(ts);
-    }
-
-    // increment per-op-day kept counter
-    s.dailyKeptCount++;
-
-    // record only if inside searched window
+  // If already 2 kept txns in same op-day => omitted (3rd+)
+  if (s.dailyKeptCount >= 2) {
     if (ts >= globalStart && ts <= globalEnd) {
       const opKey = opDayKey(r.transaction_processed_time);
       const op = ensureOp(opKey);
       op.total_txn++;
-      op.qualified++;
-      if (journeyType === 'Single Journey') op.singles++; else op.returns++;
-
-      keptRows.push({
+      op.omitted++;
+      omittedRows.push({
         TransactionProcessedTime: r.transaction_processed_time,
         VehicleRegistrationNumber: vrn,
         MapperVehicleClass: r.mapper_vehicle_class,
         TransactionAmount: r.transaction_amount,
-        Journey_Type: journeyType,
+        txn_no: s.dailyTotalCount,         // use total-day count for correct ordinal
         CCH_Transaction_ID: r.cch_transaction_id
       });
     }
+    continue; // do NOT modify keptTimestamps/state for omitted txns
+  }
+
+  // Kept: decide Single vs Return using rolling 24h + state (unchanged)
+  const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
+  const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
+
+  let journeyType;
+  if (within24hOfLastKept && s.state === 'pending_return') {
+    journeyType = 'Return Journey';
+    s.state = 'none';
+    s.keptTimestamps.push(ts);
+  } else {
+    journeyType = 'Single Journey';
+    s.state = 'pending_return';
+    s.keptTimestamps.push(ts);
+  }
+
+  // increment per-op-day kept counter
+  s.dailyKeptCount++;
+
+  // record if inside searched window
+  if (ts >= globalStart && ts <= globalEnd) {
+    const opKey = opDayKey(r.transaction_processed_time);
+    const op = ensureOp(opKey);
+    op.total_txn++;
+    op.qualified++;
+    if (journeyType === 'Single Journey') op.singles++; else op.returns++;
+
+    keptRows.push({
+      TransactionProcessedTime: r.transaction_processed_time,
+      VehicleRegistrationNumber: vrn,
+      MapperVehicleClass: r.mapper_vehicle_class,
+      TransactionAmount: r.transaction_amount,
+      Journey_Type: journeyType,
+      CCH_Transaction_ID: r.cch_transaction_id
+    });
+  }
+}
   } // end for allHistory
 
   // 5) Build labels / dailyRows / totals / render UI
