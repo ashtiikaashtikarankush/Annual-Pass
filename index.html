@@ -209,7 +209,7 @@
       const enteredPass = document.getElementById('passwordInput').value;
 
       // ✅ Set allowed usernames + passwords here
-      const validUsers = { "admin":"9540595577", "manager":"abcd", "Likhar":"8888416918", "Kishor":"9987040775" };
+      const validUsers = { "admin":"9540595577", "manager":"abcd", "Likhar":"8888416918", "Kishor":"998704077" };
 
       if(validUsers[enteredUser] && validUsers[enteredUser] === enteredPass){
         document.getElementById('loginBox').style.display = 'none';
@@ -502,72 +502,96 @@
     return byOp.get(key);
   }
 
-  for (const r of allHistory) {
-    const ts = new Date(r.transaction_processed_time);
-    const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-    if (!vrn) continue;
+  // === START: REPLACEMENT loop: per-day omitted reset, keep single/return logic unchanged ===
+for (const r of allHistory) {
+  const ts = new Date(r.transaction_processed_time);
+  const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+  if (!vrn) continue;
 
-    // Initialize state structure
-    if (!vehState.has(vrn)) vehState.set(vrn, { keptTimestamps: [], state: 'none' });
-    const s = vehState.get(vrn);
+  // op-day key for this transaction (same opDayKey function you already have)
+  const currentOpKey = opDayKey(r.transaction_processed_time);
 
-    // purge kept timestamps older than 24h relative to current txn
-    s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
+  // Initialize vehicle state (preserve keptTimestamps + state for single/return)
+  if (!vehState.has(vrn)) {
+    vehState.set(vrn, {
+      keptTimestamps: [],   // used for rolling-24h + return detection (unchanged)
+      state: 'none',        // 'none' | 'pending_return'
+      dailyOpKey: null,     // op-day key for daily kept count
+      dailyKeptCount: 0     // number of *kept* txns in current op-day (resets when op-day changes)
+    });
+  }
+  const s = vehState.get(vrn);
 
-    // If already 2 kept in last 24h -> this is omitted (3rd+)
-    if (s.keptTimestamps.length >= 2) {
-      // If this txn lies inside the searched window, record it into omittedRows and byOp
-      if (ts >= globalStart && ts <= globalEnd) {
-        const opKey = opDayKey(r.transaction_processed_time);
-        const op = ensureOp(opKey);
-        op.total_txn++;
-        op.omitted++;
-        omittedRows.push({
-          TransactionProcessedTime: r.transaction_processed_time,
-          VehicleRegistrationNumber: vrn,
-          MapperVehicleClass: r.mapper_vehicle_class,
-          TransactionAmount: r.transaction_amount,
-          txn_no: s.keptTimestamps.length + 1,
-          CCH_Transaction_ID: r.cch_transaction_id
-        });
-      }
-      // omitted txns do NOT modify keptTimestamps or state.
-      continue;
-    }
+  // If op-day changed for this vehicle, reset the daily kept counter
+  if (s.dailyOpKey !== currentOpKey) {
+    s.dailyOpKey = currentOpKey;
+    s.dailyKeptCount = 0;
+  }
 
-    // Not omitted -> it's a kept txn (single or return)
-    // But we must only increment op.total_txn for txns inside the searched window.
-    const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
-    const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
+  // Purge keptTimestamps older than 24h relative to current txn (keeps single/return logic intact)
+  s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
 
-    let journeyType;
-    if (within24hOfLastKept && s.state === 'pending_return') {
-      journeyType = 'Return Journey';
-      // update state
-      s.state = 'none';
-      s.keptTimestamps.push(ts);
-    } else {
-      journeyType = 'Single Journey';
-      s.state = 'pending_return';
-      s.keptTimestamps.push(ts);
-    }
-
-    // If this transaction is inside the searched window, record it and update byOp counts
+  // === OMITTED decision: use dailyKeptCount (resets at op-day change) ===
+  // If already 2 kept txns in the same op-day => this transaction is omitted (3rd+)
+  if (s.dailyKeptCount >= 2) {
+    // Only record omitted rows that lie inside the searched window
     if (ts >= globalStart && ts <= globalEnd) {
       const opKey = opDayKey(r.transaction_processed_time);
       const op = ensureOp(opKey);
       op.total_txn++;
-      op.qualified++;
-      if (journeyType === 'Single Journey') op.singles++; else op.returns++;
-
-      keptRows.push({
+      op.omitted++;
+      omittedRows.push({
         TransactionProcessedTime: r.transaction_processed_time,
         VehicleRegistrationNumber: vrn,
         MapperVehicleClass: r.mapper_vehicle_class,
         TransactionAmount: r.transaction_amount,
-        Journey_Type: journeyType,
+        // txn_no is the ordinal in the day (3rd, 4th, ...)
+        txn_no: s.dailyKeptCount + 1,
         CCH_Transaction_ID: r.cch_transaction_id
       });
+    }
+    // Note: do NOT modify keptTimestamps or state for omitted txns (exactly as before)
+    continue;
+  }
+
+  // === KEPT transaction: decide Single vs Return using rolling-24h state ===
+  const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
+  const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
+
+  let journeyType;
+  if (within24hOfLastKept && s.state === 'pending_return') {
+    journeyType = 'Return Journey';
+    s.state = 'none';
+    s.keptTimestamps.push(ts);
+  } else {
+    journeyType = 'Single Journey';
+    s.state = 'pending_return';
+    s.keptTimestamps.push(ts);
+  }
+
+  // increment the daily kept counter (this is what makes omitted count per op-day)
+  s.dailyKeptCount++;
+
+  // If this transaction is inside the searched window, record it & update byOp counts
+  if (ts >= globalStart && ts <= globalEnd) {
+    const opKey = opDayKey(r.transaction_processed_time);
+    const op = ensureOp(opKey);
+    op.total_txn++;
+    op.qualified++;
+    if (journeyType === 'Single Journey') op.singles++; else op.returns++;
+
+    keptRows.push({
+      TransactionProcessedTime: r.transaction_processed_time,
+      VehicleRegistrationNumber: vrn,
+      MapperVehicleClass: r.mapper_vehicle_class,
+      TransactionAmount: r.transaction_amount,
+      Journey_Type: journeyType,
+      CCH_Transaction_ID: r.cch_transaction_id
+    });
+  }
+}
+// === END: REPLACEMENT loop ===
+
     } else {
       // It's before the searched window (historical) — we only update state (done above)
       // Do not record to keptRows or byOp.
