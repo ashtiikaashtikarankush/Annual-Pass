@@ -414,11 +414,10 @@
   const to = document.getElementById('toDate').value;
   if (!from || !to) { alert('Select dates'); return; }
 
-  // op-day window to fetch and for grouping
   const { start: globalStart } = opDayWindowFor(from);
   const { end: globalEnd } = opDayWindowFor(to);
 
-  // 1) Fetch all txns inside the searched window to discover vehicle list
+  // 1) Fetch in-window txns to discover vehicles
   let inWindowRows = [], totalCount = 0;
   try {
     const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
@@ -431,7 +430,6 @@
 
   if (!inWindowRows.length) {
     alert('No matching transactions in the searched date range.');
-    // still clear UI
     document.getElementById('summaryWrap').style.display = 'none';
     document.getElementById('dailyWrap').style.display = 'none';
     document.getElementById('keptWrap').style.display = 'none';
@@ -439,7 +437,7 @@
     return;
   }
 
-  // 2) Build unique vehicle list from the searched window (uppercased & trimmed)
+  // 2) Unique vehicle list
   const vrnSet = new Set();
   for (const r of inWindowRows) {
     const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
@@ -451,13 +449,10 @@
     return;
   }
 
-  // 3) Fetch ALL transactions for those vehicles up to globalEnd (no lower bound)
-  // We'll fetch only transaction_amount == 15 to match your logic.
-  // Because supabase .in has a limit on URL length, chunk vrnArray into batches (e.g., 300)
+  // 3) Fetch full history for those vehicles up to globalEnd
   const pageSize = 1000;
   const vrnBatchSize = 300;
   let allHistory = [];
-
   try {
     for (let i = 0; i < vrnArray.length; i += vrnBatchSize) {
       const batch = vrnArray.slice(i, i + vrnBatchSize);
@@ -488,11 +483,10 @@
     return;
   }
 
-  // 4) Sort entire history and process state machine over full history.
+  // 4) Sort and process (state machine + per-op-day omitted reset)
   allHistory.sort((a,b)=> new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
 
-  // We'll aggregate into op-day groups but only record rows that fall in the searched window.
-  const byOp = new Map(); // opKey -> { total_txn, qualified, singles, returns, omitted }
+  const byOp = new Map();
   const keptRows = [], omittedRows = [];
   const vehState = new Map();
   const MS_24H = 24 * 60 * 60 * 1000;
@@ -502,103 +496,89 @@
     return byOp.get(key);
   }
 
-  // === START: REPLACEMENT loop: per-day omitted reset, keep single/return logic unchanged ===
-for (const r of allHistory) {
-  const ts = new Date(r.transaction_processed_time);
-  const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-  if (!vrn) continue;
+  for (const r of allHistory) {
+    const ts = new Date(r.transaction_processed_time);
+    const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+    if (!vrn) continue;
 
-  // op-day key for this transaction (same opDayKey function you already have)
-  const currentOpKey = opDayKey(r.transaction_processed_time);
+    const currentOpKey = opDayKey(r.transaction_processed_time);
 
-  // Initialize vehicle state (preserve keptTimestamps + state for single/return)
-  if (!vehState.has(vrn)) {
-    vehState.set(vrn, {
-      keptTimestamps: [],   // used for rolling-24h + return detection (unchanged)
-      state: 'none',        // 'none' | 'pending_return'
-      dailyOpKey: null,     // op-day key for daily kept count
-      dailyKeptCount: 0     // number of *kept* txns in current op-day (resets when op-day changes)
-    });
-  }
-  const s = vehState.get(vrn);
+    if (!vehState.has(vrn)) {
+      vehState.set(vrn, {
+        keptTimestamps: [],
+        state: 'none',
+        dailyOpKey: null,
+        dailyKeptCount: 0
+      });
+    }
+    const s = vehState.get(vrn);
 
-  // If op-day changed for this vehicle, reset the daily kept counter
-  if (s.dailyOpKey !== currentOpKey) {
-    s.dailyOpKey = currentOpKey;
-    s.dailyKeptCount = 0;
-  }
+    // reset daily counter when op-day changes
+    if (s.dailyOpKey !== currentOpKey) {
+      s.dailyOpKey = currentOpKey;
+      s.dailyKeptCount = 0;
+    }
 
-  // Purge keptTimestamps older than 24h relative to current txn (keeps single/return logic intact)
-  s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
+    // purge kept timestamps older than 24h
+    s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
 
-  // === OMITTED decision: use dailyKeptCount (resets at op-day change) ===
-  // If already 2 kept txns in the same op-day => this transaction is omitted (3rd+)
-  if (s.dailyKeptCount >= 2) {
-    // Only record omitted rows that lie inside the searched window
+    // omitted decision uses dailyKeptCount (resets each op-day)
+    if (s.dailyKeptCount >= 2) {
+      if (ts >= globalStart && ts <= globalEnd) {
+        const opKey = opDayKey(r.transaction_processed_time);
+        const op = ensureOp(opKey);
+        op.total_txn++;
+        op.omitted++;
+        omittedRows.push({
+          TransactionProcessedTime: r.transaction_processed_time,
+          VehicleRegistrationNumber: vrn,
+          MapperVehicleClass: r.mapper_vehicle_class,
+          TransactionAmount: r.transaction_amount,
+          txn_no: s.dailyKeptCount + 1,
+          CCH_Transaction_ID: r.cch_transaction_id
+        });
+      }
+      continue; // do not change keptTimestamps/state for omitted txns
+    }
+
+    // kept: single/return logic (unchanged)
+    const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
+    const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
+
+    let journeyType;
+    if (within24hOfLastKept && s.state === 'pending_return') {
+      journeyType = 'Return Journey';
+      s.state = 'none';
+      s.keptTimestamps.push(ts);
+    } else {
+      journeyType = 'Single Journey';
+      s.state = 'pending_return';
+      s.keptTimestamps.push(ts);
+    }
+
+    // increment per-op-day kept counter
+    s.dailyKeptCount++;
+
+    // record only if inside searched window
     if (ts >= globalStart && ts <= globalEnd) {
       const opKey = opDayKey(r.transaction_processed_time);
       const op = ensureOp(opKey);
       op.total_txn++;
-      op.omitted++;
-      omittedRows.push({
+      op.qualified++;
+      if (journeyType === 'Single Journey') op.singles++; else op.returns++;
+
+      keptRows.push({
         TransactionProcessedTime: r.transaction_processed_time,
         VehicleRegistrationNumber: vrn,
         MapperVehicleClass: r.mapper_vehicle_class,
         TransactionAmount: r.transaction_amount,
-        // txn_no is the ordinal in the day (3rd, 4th, ...)
-        txn_no: s.dailyKeptCount + 1,
+        Journey_Type: journeyType,
         CCH_Transaction_ID: r.cch_transaction_id
       });
     }
-    // Note: do NOT modify keptTimestamps or state for omitted txns (exactly as before)
-    continue;
-  }
-
-  // === KEPT transaction: decide Single vs Return using rolling-24h state ===
-  const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
-  const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
-
-  let journeyType;
-  if (within24hOfLastKept && s.state === 'pending_return') {
-    journeyType = 'Return Journey';
-    s.state = 'none';
-    s.keptTimestamps.push(ts);
-  } else {
-    journeyType = 'Single Journey';
-    s.state = 'pending_return';
-    s.keptTimestamps.push(ts);
-  }
-
-  // increment the daily kept counter (this is what makes omitted count per op-day)
-  s.dailyKeptCount++;
-
-  // If this transaction is inside the searched window, record it & update byOp counts
-  if (ts >= globalStart && ts <= globalEnd) {
-    const opKey = opDayKey(r.transaction_processed_time);
-    const op = ensureOp(opKey);
-    op.total_txn++;
-    op.qualified++;
-    if (journeyType === 'Single Journey') op.singles++; else op.returns++;
-
-    keptRows.push({
-      TransactionProcessedTime: r.transaction_processed_time,
-      VehicleRegistrationNumber: vrn,
-      MapperVehicleClass: r.mapper_vehicle_class,
-      TransactionAmount: r.transaction_amount,
-      Journey_Type: journeyType,
-      CCH_Transaction_ID: r.cch_transaction_id
-    });
-  }
-}
-// === END: REPLACEMENT loop ===
-
-    } else {
-      // It's before the searched window (historical) — we only update state (done above)
-      // Do not record to keptRows or byOp.
-    }
   } // end for allHistory
 
-  // 5) Build daily labels and dailyRows from byOp for UI
+  // 5) Build labels / dailyRows / totals / render UI
   const labels = [];
   { const d = new Date(from + 'T00:00:00'); const toD = new Date(to + 'T00:00:00');
     while (d <= toD) { labels.push(ymd(d)); d.setDate(d.getDate()+1); }
@@ -618,7 +598,6 @@ for (const r of allHistory) {
     };
   });
 
-  // Totals
   const tot = {
     period: 'TOTAL',
     total_txn: dailyRows.reduce((a,b)=>a+b.total_txn,0),
@@ -639,7 +618,6 @@ for (const r of allHistory) {
     omitted: tot.omitted
   };
 
-  // Render UI (same as before)
   document.getElementById('sum_period').textContent = summary.period;
   document.getElementById('sum_total_single').textContent = summary.total_single;
   document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
@@ -648,9 +626,9 @@ for (const r of allHistory) {
   document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
   document.getElementById('sum_omitted').textContent = summary.omitted;
   document.getElementById('summaryWrap').style.display = 'block';
-  document.getElementById('rowCount').textContent = `Rows considered: ${Object.keys(byOp).length ? Object.values(byOp).reduce((a,b)=>a + b.total_txn,0) : keptRows.length + omittedRows.length} of ${totalCount}`;
+  document.getElementById('rowCount').textContent = `Rows considered: ${Object.keys(byOp).length ? Object.values(Object.fromEntries(byOp)).reduce((a,b)=>a + b.total_txn,0) : keptRows.length + omittedRows.length} of ${totalCount}`;
 
-  // Daily table
+  // daily table
   const tb = document.getElementById('dailyTbody');
   tb.innerHTML = dailyRows.map(r=>`
     <tr>
@@ -671,7 +649,7 @@ for (const r of allHistory) {
   document.getElementById('tot_omitted').textContent = tot.omitted;
   document.getElementById('dailyWrap').style.display = 'block';
 
-  // Kept table (only rows inside searched window)
+  // kept table
   const keptTb = document.getElementById('keptTbody');
   keptTb.innerHTML = keptRows.map(r=>`
     <tr>
@@ -684,7 +662,7 @@ for (const r of allHistory) {
   `).join('');
   document.getElementById('keptWrap').style.display = keptRows.length ? 'block':'none';
 
-  // Omitted table
+  // omitted table
   const omTb = document.getElementById('omitTbody');
   omTb.innerHTML = omittedRows.map(r=>`
     <tr>
@@ -697,9 +675,9 @@ for (const r of allHistory) {
   `).join('');
   document.getElementById('omitWrap').style.display = omittedRows.length ? 'block':'none';
 
-  // Save for export
   window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
 });
+
       document.getElementById('btnRefresh').onclick = () => {
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
       };
