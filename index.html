@@ -496,7 +496,8 @@
     return byOp.get(key);
   }
 
-  for (const r of allHistory) {
+  // REPLACEMENT loop with dailyTotalCount fix
+for (const r of allHistory) {
   const ts = new Date(r.transaction_processed_time);
   const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
   if (!vrn) continue;
@@ -524,7 +525,7 @@
   // increment total txn ordinal for the day (used for txn_no)
   s.dailyTotalCount++;
 
-  // purge kept timestamps older than 24h
+  // purge kept timestamps older than 24h (rolling window for return logic)
   s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
 
   // If already 2 kept txns in same op-day => omitted (3rd+)
@@ -539,14 +540,14 @@
         VehicleRegistrationNumber: vrn,
         MapperVehicleClass: r.mapper_vehicle_class,
         TransactionAmount: r.transaction_amount,
-        txn_no: s.dailyTotalCount,         // use total-day count for correct ordinal
+        txn_no: s.dailyTotalCount,         // use total-day ordinal for correct 3,4,5...
         CCH_Transaction_ID: r.cch_transaction_id
       });
     }
     continue; // do NOT modify keptTimestamps/state for omitted txns
   }
 
-  // Kept: decide Single vs Return using rolling 24h + state (unchanged)
+  // Kept: decide Single vs Return using rolling 24h + state
   const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
   const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
 
@@ -582,6 +583,7 @@
     });
   }
 }
+
   } // end for allHistory
 
   // 5) Build labels / dailyRows / totals / render UI
