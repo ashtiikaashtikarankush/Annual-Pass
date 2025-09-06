@@ -414,29 +414,87 @@
   const to = document.getElementById('toDate').value;
   if (!from || !to) { alert('Select dates'); return; }
 
-  // Build op-day window for fetching (global range from start of `from` opday to end of `to` opday)
+  // op-day window to fetch and for grouping
   const { start: globalStart } = opDayWindowFor(from);
   const { end: globalEnd } = opDayWindowFor(to);
 
-  let data, totalCount;
+  // 1) Fetch all txns inside the searched window to discover vehicle list
+  let inWindowRows = [], totalCount = 0;
   try {
     const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
-    data = res.rows || [];
-    totalCount = res.count || data.length;
-  } catch (error) {
-    alert('Fetch failed: ' + (error && error.message ? error.message : error));
+    inWindowRows = res.rows || [];
+    totalCount = res.count || inWindowRows.length;
+  } catch (err) {
+    alert('Initial fetch failed: ' + (err && err.message ? err.message : err));
     return;
   }
 
-  // Ensure chronological order (ascending)
-  data.sort((a, b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
+  if (!inWindowRows.length) {
+    alert('No matching transactions in the searched date range.');
+    // still clear UI
+    document.getElementById('summaryWrap').style.display = 'none';
+    document.getElementById('dailyWrap').style.display = 'none';
+    document.getElementById('keptWrap').style.display = 'none';
+    document.getElementById('omitWrap').style.display = 'none';
+    return;
+  }
 
-  // We'll decide journeys using a rolling 24-hour window across all fetched rows,
-  // while still aggregating counts into operation-day groups (opDayKey).
-  const byOp = new Map(); // opDayKey -> { total_txn, qualified, singles, returns, omitted }
-  const vehState = new Map(); // vrn -> { keptTimestamps: [Date,...], state: 'none'|'pending_return' }
+  // 2) Build unique vehicle list from the searched window (uppercased & trimmed)
+  const vrnSet = new Set();
+  for (const r of inWindowRows) {
+    const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+    if (vrn) vrnSet.add(vrn);
+  }
+  const vrnArray = Array.from(vrnSet);
+  if (!vrnArray.length) {
+    alert('No valid vehicle numbers found in the searched window.');
+    return;
+  }
+
+  // 3) Fetch ALL transactions for those vehicles up to globalEnd (no lower bound)
+  // We'll fetch only transaction_amount == 15 to match your logic.
+  // Because supabase .in has a limit on URL length, chunk vrnArray into batches (e.g., 300)
+  const pageSize = 1000;
+  const vrnBatchSize = 300;
+  let allHistory = [];
+
+  try {
+    for (let i = 0; i < vrnArray.length; i += vrnBatchSize) {
+      const batch = vrnArray.slice(i, i + vrnBatchSize);
+      let fromRange = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('pass_transactions')
+          .select('vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount, cch_transaction_id', { count: 'estimated' })
+          .in('vehicle_registration_number', batch)
+          .lte('transaction_processed_time', globalEnd.toISOString())
+          .eq('transaction_amount', 15)
+          .order('transaction_processed_time', { ascending: true })
+          .range(fromRange, fromRange + pageSize - 1);
+
+        if (error) throw error;
+        if (data && data.length) allHistory = allHistory.concat(data);
+        if (!data || data.length < pageSize) break;
+        fromRange += pageSize;
+      }
+    }
+  } catch (err) {
+    alert('Failed fetching full history for vehicles: ' + (err && err.message ? err.message : err));
+    return;
+  }
+
+  if (!allHistory.length) {
+    alert('No historical transactions found for vehicles in this range.');
+    return;
+  }
+
+  // 4) Sort entire history and process state machine over full history.
+  allHistory.sort((a,b)=> new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
+
+  // We'll aggregate into op-day groups but only record rows that fall in the searched window.
+  const byOp = new Map(); // opKey -> { total_txn, qualified, singles, returns, omitted }
   const keptRows = [], omittedRows = [];
-
+  const vehState = new Map();
   const MS_24H = 24 * 60 * 60 * 1000;
 
   function ensureOp(key) {
@@ -444,87 +502,94 @@
     return byOp.get(key);
   }
 
-  for (const r of data) {
+  for (const r of allHistory) {
     const ts = new Date(r.transaction_processed_time);
-    const opKey = opDayKey(r.transaction_processed_time); // same op-day grouping you used
-    const op = ensureOp(opKey);
-    op.total_txn++;
+    const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+    if (!vrn) continue;
 
-    const vrn = (r.vehicle_registration_number || '').toString().trim();
-    if (!vrn) {
-      // malformed VRN: counted as txn but not qualified/kept
-      continue;
-    }
-
-    if (!vehState.has(vrn)) {
-      vehState.set(vrn, { keptTimestamps: [], state: 'none' });
-    }
+    // Initialize state structure
+    if (!vehState.has(vrn)) vehState.set(vrn, { keptTimestamps: [], state: 'none' });
     const s = vehState.get(vrn);
 
-    // purge kept timestamps older than 24h from current txn
+    // purge kept timestamps older than 24h relative to current txn
     s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
 
-    // If 2 or more kept in last 24h -> current is omitted (3rd+)
+    // If already 2 kept in last 24h -> this is omitted (3rd+)
     if (s.keptTimestamps.length >= 2) {
-      op.omitted++;
-      omittedRows.push({
-        TransactionProcessedTime: r.transaction_processed_time,
-        VehicleRegistrationNumber: r.vehicle_registration_number,
-        MapperVehicleClass: r.mapper_vehicle_class,
-        TransactionAmount: r.transaction_amount,
-        txn_no: s.keptTimestamps.length + 1,
-        CCH_Transaction_ID: r.cch_transaction_id
-      });
-      // do not change keptTimestamps or state for omitted txns
+      // If this txn lies inside the searched window, record it into omittedRows and byOp
+      if (ts >= globalStart && ts <= globalEnd) {
+        const opKey = opDayKey(r.transaction_processed_time);
+        const op = ensureOp(opKey);
+        op.total_txn++;
+        op.omitted++;
+        omittedRows.push({
+          TransactionProcessedTime: r.transaction_processed_time,
+          VehicleRegistrationNumber: vrn,
+          MapperVehicleClass: r.mapper_vehicle_class,
+          TransactionAmount: r.transaction_amount,
+          txn_no: s.keptTimestamps.length + 1,
+          CCH_Transaction_ID: r.cch_transaction_id
+        });
+      }
+      // omitted txns do NOT modify keptTimestamps or state.
       continue;
     }
 
-    // This will be a kept transaction (single or return)
-    op.qualified++;
-
+    // Not omitted -> it's a kept txn (single or return)
+    // But we must only increment op.total_txn for txns inside the searched window.
     const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
     const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
 
     let journeyType;
     if (within24hOfLastKept && s.state === 'pending_return') {
       journeyType = 'Return Journey';
-      op.returns++;
-      s.state = 'none'; // complete the pair
+      // update state
+      s.state = 'none';
       s.keptTimestamps.push(ts);
     } else {
       journeyType = 'Single Journey';
-      op.singles++;
       s.state = 'pending_return';
       s.keptTimestamps.push(ts);
     }
 
-    keptRows.push({
-      TransactionProcessedTime: r.transaction_processed_time,
-      VehicleRegistrationNumber: r.vehicle_registration_number,
-      MapperVehicleClass: r.mapper_vehicle_class,
-      TransactionAmount: r.transaction_amount,
-      Journey_Type: journeyType,
-      CCH_Transaction_ID: r.cch_transaction_id
-    });
-  }
+    // If this transaction is inside the searched window, record it and update byOp counts
+    if (ts >= globalStart && ts <= globalEnd) {
+      const opKey = opDayKey(r.transaction_processed_time);
+      const op = ensureOp(opKey);
+      op.total_txn++;
+      op.qualified++;
+      if (journeyType === 'Single Journey') op.singles++; else op.returns++;
 
-  // Build daily labels (same as before)
+      keptRows.push({
+        TransactionProcessedTime: r.transaction_processed_time,
+        VehicleRegistrationNumber: vrn,
+        MapperVehicleClass: r.mapper_vehicle_class,
+        TransactionAmount: r.transaction_amount,
+        Journey_Type: journeyType,
+        CCH_Transaction_ID: r.cch_transaction_id
+      });
+    } else {
+      // It's before the searched window (historical) — we only update state (done above)
+      // Do not record to keptRows or byOp.
+    }
+  } // end for allHistory
+
+  // 5) Build daily labels and dailyRows from byOp for UI
   const labels = [];
   { const d = new Date(from + 'T00:00:00'); const toD = new Date(to + 'T00:00:00');
     while (d <= toD) { labels.push(ymd(d)); d.setDate(d.getDate()+1); }
   }
 
-  // Build dailyRows array for table rendering
   const dailyRows = labels.map(key => {
     const o = byOp.get(key) || { total_txn:0, qualified:0, singles:0, returns:0, omitted:0 };
-    const comp = (o.singles || 0) * SINGLE_FARE + (o.returns || 0) * RETURN_FARE;
+    const compensation = (o.singles || 0) * SINGLE_FARE + (o.returns || 0) * RETURN_FARE;
     return {
       period: key,
       total_txn: o.total_txn || 0,
       qualified_txn: o.qualified || 0,
       total_single: o.singles || 0,
       total_return: o.returns || 0,
-      compensation: comp,
+      compensation,
       omitted: o.omitted || 0
     };
   });
@@ -540,7 +605,6 @@
     omitted: dailyRows.reduce((a,b)=>a + (b.omitted||0), 0)
   };
 
-  // Summary object used by UI/export (same shape you used earlier)
   const summary = {
     period: `${from} to ${to}`,
     total_single: tot.total_single,
@@ -551,7 +615,7 @@
     omitted: tot.omitted
   };
 
-  // --- Render summary to screen (same UI code you had) ---
+  // Render UI (same as before)
   document.getElementById('sum_period').textContent = summary.period;
   document.getElementById('sum_total_single').textContent = summary.total_single;
   document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
@@ -560,7 +624,7 @@
   document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
   document.getElementById('sum_omitted').textContent = summary.omitted;
   document.getElementById('summaryWrap').style.display = 'block';
-  document.getElementById('rowCount').textContent = `Rows considered: ${data.length} of ${totalCount}`;
+  document.getElementById('rowCount').textContent = `Rows considered: ${Object.keys(byOp).length ? Object.values(byOp).reduce((a,b)=>a + b.total_txn,0) : keptRows.length + omittedRows.length} of ${totalCount}`;
 
   // Daily table
   const tb = document.getElementById('dailyTbody');
@@ -583,7 +647,7 @@
   document.getElementById('tot_omitted').textContent = tot.omitted;
   document.getElementById('dailyWrap').style.display = 'block';
 
-  // Kept table
+  // Kept table (only rows inside searched window)
   const keptTb = document.getElementById('keptTbody');
   keptTb.innerHTML = keptRows.map(r=>`
     <tr>
@@ -612,7 +676,6 @@
   // Save for export
   window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
 });
-
       document.getElementById('btnRefresh').onclick = () => {
         const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
       };
