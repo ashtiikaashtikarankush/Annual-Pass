@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CSV Upload & Journey Classifier — DB-authoritative (Kolkata timezone handling)</title>
+
+  <!-- Supabase (CDN) + PapaParse + SheetJS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background:#f4f6f8; color:#0b1220; margin:0; padding:24px;}
+    .wrap { max-width:1200px; margin:0 auto; background:#fff; border-radius:12px; padding:20px; box-shadow:0 6px 30px rgba(16,24,40,0.06);}
+    h1 { margin:0 0 8px; font-size:20px; }
+    p.small { color:#475569; margin:4px 0 16px; }
+    .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px;}
+    input[type=file] { padding:6px; }
+    button { background:#0366d6; color:#fff; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; }
+    button.secondary { background:#6b7280; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:13px; }
+    th, td { border:1px solid #e6eef6; padding:8px; text-align:left; vertical-align:top; }
+    th { background:#f1f5f9; font-weight:600; }
+    .msg { margin-top:12px; padding:10px; border-radius:8px; }
+    .ok { background:#ecfdf5; color:#065f46; }
+    .err { background:#fff1f2; color:#9f1239; }
+    .note { color:#334155; font-size:13px; margin-top:8px; }
+    .small-muted { font-size:12px; color:#64748b; }
+    #preview-wrap { max-height:420px; overflow:auto; border-radius:8px; border:1px solid #eef2f7; margin-top:10px; }
+    #inserted-wrap { margin-top:14px; border-radius:8px; padding:10px; border:1px dashed #dbeafe; background:#fbfeff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>CSV Upload & Journey Classifier — DB-authoritative</h1>
+    <p class="small">
+      Upload CSV. Client computes preview (client_journey_type/client_remarks) for UX but the DB trigger will compute authoritative <code>journey_type</code> and <code>remarks</code>. Timestamps without timezone are assumed Asia/Kolkata (UTC+05:30) and converted to UTC for DB.
+    </p>
+
+    <div class="controls">
+      <input id="csvfile" type="file" accept=".csv" />
+      <button id="previewBtn" class="secondary">Preview (DB-aware)</button>
+      <button id="insertBtn">Insert to Supabase (DB computes journey)</button>
+      <button id="exportBtn" class="secondary">Export to Excel</button>
+      <button id="clearBtn" class="secondary">Clear</button>
+    </div>
+
+    <div id="status" class="msg small-muted">No file loaded</div>
+
+    <div id="preview-wrap" style="display:none;">
+      <h3>Client Preview (first 200 rows)</h3>
+      <table id="preview-table" aria-live="polite"></table>
+    </div>
+
+    <div id="inserted-wrap" style="display:none;">
+      <h3>DB Returned Rows (after insert)</h3>
+      <div id="insert-summary" class="small-muted"></div>
+      <div id="inserted-table-wrap" style="max-height:300px; overflow:auto; margin-top:8px;">
+        <table id="inserted-table"></table>
+      </div>
+    </div>
+
+    <p class="note">⚠️ This page uses your Supabase <em>anon</em> key in-browser. Protect your project by enabling Row-Level Security (RLS) + safe policies. The DB trigger will compute final <code>journey_type</code> and <code>remarks</code>.</p>
+  </div>
+
+<script>
+(async function () {
+  // ------------------ Configuration ------------------
+  const SUPABASE_URL = "https://pxcbdrkhhoqqhocmrtgj.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4Y2JkcmtoaG9xcWhvY21ydGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5NjIxMDcsImV4cCI6MjA3MjUzODEwN30.ufOrUdyi307pqmZdH5AS56UGmMti8n_2BW8YHK-2rk4";
+  const DB_TABLE = "pass_transactions";
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // ------------------ Helpers ------------------
+  function setStatus(text, ok = true) {
+    const el = document.getElementById('status');
+    el.textContent = text;
+    el.className = 'msg ' + (ok ? 'ok' : 'err');
+  }
+
+  function toNumberSafe(v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (s === '') return null;
+    const n = Number(s.replace(/,/g, ''));
+    return isNaN(n) ? null : n;
+  }
+
+  function toBooleanSafe(v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim().toLowerCase();
+    if (s === '') return null;
+    if (['true','yes','1'].includes(s)) return true;
+    if (['false','no','0'].includes(s)) return false;
+    return null;
+  }
+
+  // Parse a date-like value and return an ISO UTC string, or null.
+  // If the input has no timezone info we assume Asia/Kolkata (UTC+05:30).
+  function parseToUTCorNull(v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (s === '') return null;
+
+    // If it already looks timezone-aware (Z or +/-HH:MM), let Date parse it
+    const tzAware = /([\+\-]\d{2}:\d{2}|Z)$/i.test(s);
+    try {
+      if (tzAware) {
+        const d = new Date(s);
+        return isNaN(d) ? null : d.toISOString();
+      } else {
+        // No timezone present — assume Asia/Kolkata (UTC+05:30)
+        // Use 'T' separator if missing
+        const t = s.includes('T') ? s : s.replace(' ', 'T');
+        const withOffset = t + '+05:30';
+        const d = new Date(withOffset);
+        return isNaN(d) ? null : d.toISOString();
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Remove internal keys and empty strings; do NOT send client/server journey fields
+  // Ensure date fields are ISO UTC (via parseToUTCorNull) and numerics/booleans are typed
+  function sanitizeRowForInsert(row) {
+    const out = {};
+    for (const k in row) {
+      if (!k) continue;
+      // drop internal/debug keys
+      if (k.startsWith('__')) continue;
+      // do not send client preview fields or journey fields; DB trigger will compute journey_type/remarks
+      if (k === 'client_journey_type' || k === 'client_remarks' || k === 'journey_type' || k === 'remarks') continue;
+
+      let v = row[k];
+
+      // Convert empty strings -> null
+      if (v === '') { out[k] = null; continue; }
+
+      // Normalize known date fields to ISO UTC or null
+      if (k === 'reader_read_time' || k === 'reader_read_time' || k === 'reader_read_time' ||
+          k === 'chargeback_settlement_date' || k === 'adjustment_settlement_date') {
+        // If value already is ISO (string) or Date object, parse; else try parseToUTCorNull
+        if (v instanceof Date && !isNaN(v)) {
+          out[k] = v.toISOString();
+        } else {
+          out[k] = (typeof v === 'string') ? parseToUTCorNull(v) : null;
+        }
+        continue;
+      }
+
+      // Numeric fields
+      if (k === 'transaction_amount' || k === 'accepted_amount' ||
+          k === 'chargeback_amount_accepted' || k === 'adjustment_amount_accepted') {
+        out[k] = toNumberSafe(v);
+        continue;
+      }
+
+      // Boolean-ish fields
+      if (k === 'chargeback_raised' || k === 'adjustment_raised') {
+        out[k] = toBooleanSafe(v);
+        continue;
+      }
+
+      // Trim and normalize some IDs/VRNs
+      if (k === 'vehicle_registration_number' || k === 'cch_transaction_id' || k === 'plaza_transaction_id' || k === 'tag_id') {
+        if (v === null || v === undefined) { out[k] = null; }
+        else out[k] = String(v).trim();
+        continue;
+      }
+
+      // default: pass through
+      out[k] = v;
+    }
+    return out;
+  }
+
+  // ------------------ DB helpers ------------------
+  // fetch previous latest state for VRNs within last `hours` (default 24)
+  async function fetchLastStateForVrns(vrns, hours = 24) {
+    const result = new Map();
+    if (!vrns || vrns.length === 0) return result;
+
+    const CHUNK = 400;
+    const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+    for (let i = 0; i < vrns.length; i += CHUNK) {
+      const chunk = vrns.slice(i, i + CHUNK);
+      const { data, error } = await supabase
+        .from(DB_TABLE)
+        .select('vehicle_registration_number,reader_read_time,journey_type')
+        .in('vehicle_registration_number', chunk)
+        .gte('reader_read_time', cutoff);
+
+      if (error) throw error;
+      (data || []).forEach(row => {
+        const vrn = row.vehicle_registration_number ? String(row.vehicle_registration_number).trim().toUpperCase() : null;
+        const rio = row.reader_read_time;
+        if (!vrn || !rio) return;
+        const existing = result.get(vrn);
+        if (!existing || new Date(rio) > new Date(existing.lastTime)) {
+          result.set(vrn, { lastTime: rio, lastType: row.journey_type || null });
+        }
+      });
+    }
+    return result;
+  }
+
+  // fetch existing cch ids present in DB
+  async function fetchExistingCchIds(idsArray) {
+    if (!idsArray || idsArray.length === 0) return new Set();
+    const existing = new Set();
+    const CHUNK = 500;
+    for (let i = 0; i < idsArray.length; i += CHUNK) {
+      const chunk = idsArray.slice(i, i + CHUNK);
+      const { data, error } = await supabase
+        .from(DB_TABLE)
+        .select('cch_transaction_id')
+        .in('cch_transaction_id', chunk)
+        .limit(CHUNK);
+      if (error) throw error;
+      (data || []).forEach(r => {
+        if (r.cch_transaction_id) existing.add(String(r.cch_transaction_id));
+      });
+    }
+    return existing;
+  }
+
+  // ------------------ Processing & classification (client preview only) ------------------
+  function processAndClassify(rawRows, prevStateMap = new Map()) {
+    const normalized = (rawRows || []).map(r => ({
+      entry_plaza_id: r["Entry Plaza ID"],
+      entry_lane_id: r["Entry Lane ID"],
+      exit_plaza_id: r["Exit Plaza ID"],
+      exit_lane_id: r["Exit Lane ID"],
+      tag_id: r["Tag ID"],
+      vehicle_registration_number: (r["Vehicle Registration Number"] || "").trim().toUpperCase(),
+      plaza_transaction_id: r["Plaza Transaction ID"],
+      cch_transaction_id: r["CCH Transaction ID"] ? String(r["CCH Transaction ID"]).trim() : null,
+      avc_class: r["AVC Class"],
+      mapper_vehicle_class: r["Mapper Vehicle Class"],
+      reader_read_time: parseToUTCorNull(r["Reader Read Time"]),
+      transaction_received_time: parseToUTCorNull(r["Transaction Received Time"]),
+      transaction_processed_time: parseToUTCorNull(r["Transaction Processed Time"]),
+      transaction_amount: toNumberSafe(r["Transaction Amount"]),
+      accepted_amount: toNumberSafe(r["Accepted Amount"]),
+      transaction_status: r["Transaction Status"],
+      reason_code: r["Reason Code"],
+      fare_type: r["Fare Type"],
+      chargeback_raised: toBooleanSafe(r["Chargeback Raised?"]),
+      chargeback_amount_accepted: toNumberSafe(r["Chargeback Amount Accepted"]),
+      chargeback_settlement_date: parseToUTCorNull(r["Chargeback Settlement Date"]),
+      adjustment_raised: toBooleanSafe(r["Adjustment Raised"]),
+      adjustment_amount_accepted: toNumberSafe(r["Adjustment Amount Accepted"]),
+      adjustment_settlement_date: parseToUTCorNull(r["Adjustment Settlement Date"]),
+      __raw: r
+    }));
+
+    // keep rows with transaction_amount === 15 and required fields
+    const filtered = normalized.filter(r =>
+      r.transaction_amount === 15 && r.vehicle_registration_number && r.reader_read_time
+    );
+
+    // group by VRN
+    const byVrn = {};
+    for (const r of filtered) {
+      byVrn[r.vehicle_registration_number] = byVrn[r.vehicle_registration_number] || [];
+      byVrn[r.vehicle_registration_number].push(r);
+    }
+
+    const output = [];
+    for (const vrn in byVrn) {
+      const list = byVrn[vrn].sort((a,b) => new Date(a.reader_read_time) - new Date(b.reader_read_time));
+      const seed = prevStateMap && prevStateMap.has(vrn) ? prevStateMap.get(vrn) : null;
+      let prevTime = seed && seed.lastTime ? new Date(seed.lastTime) : null;
+      let prevType = seed && seed.lastType ? seed.lastType : null;
+
+      for (const row of list) {
+        const t = new Date(row.reader_read_time);
+        let jtype = "Single";
+        let remarks = row.remarks || "";
+        if (prevTime && (t - prevTime <= 24*60*60*1000)) {
+          if (prevType === "Single") {
+            jtype = "Return";
+            remarks = `Return paired with ${prevTime.toISOString()}`;
+          } else {
+            jtype = "Single";
+          }
+        }
+        // client preview fields
+        row.client_journey_type = jtype;
+        row.client_remarks = remarks;
+        // intentionally NOT setting row.journey_type/remarks (DB will compute authoritative values)
+        prevTime = t;
+        prevType = jtype;
+        output.push(row);
+      }
+    }
+
+    // dedupe within payload by cch_transaction_id (keep first)
+    const deduped = [];
+    const seenCch = new Set();
+    for (const r of output) {
+      const id = r.cch_transaction_id ? String(r.cch_transaction_id).trim() : null;
+      if (id) {
+        if (seenCch.has(id)) continue;
+        seenCch.add(id);
+      }
+      deduped.push(r);
+    }
+
+    // final sort
+    deduped.sort((a,b) => new Date(a.reader_read_time) - new Date(b.reader_read_time));
+    return deduped;
+  }
+
+  // ------------------ UI renderers ------------------
+  function renderPreview(rows) {
+    const wrap = document.getElementById('preview-wrap');
+    const table = document.getElementById('preview-table');
+    table.innerHTML = "";
+    if (!rows || !rows.length) {
+      wrap.style.display = "none";
+      return;
+    }
+    wrap.style.display = "block";
+
+    const cols = Object.keys(rows[0]);
+    if (!cols.includes('client_journey_type')) cols.push('client_journey_type');
+    if (!cols.includes('client_remarks')) cols.push('client_remarks');
+
+    const thead = "<tr>" + cols.map(c => `<th>${c}</th>`).join("") + "</tr>";
+    const body = rows.slice(0,200).map(r =>
+      "<tr>" + cols.map(c => `<td>${escapeHtml(String(r[c] === null || r[c] === undefined ? "" : r[c]))}</td>`).join("") + "</tr>"
+    ).join("");
+    table.innerHTML = "<thead>" + thead + "</thead><tbody>" + body + "</tbody>";
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[ch]));
+  }
+
+  // ------------------ Export to Excel ------------------
+  function exportToExcel(rows) {
+    if (!rows || !rows.length) {
+      setStatus("No processed rows to export. Run Preview first.", false);
+      return;
+    }
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Journeys");
+    XLSX.writeFile(wb, "journey_data.xlsx");
+    setStatus("Exported journey_data.xlsx", true);
+  }
+
+  // ------------------ UI wiring ------------------
+  document.getElementById('previewBtn').onclick = async () => {
+    const file = document.getElementById('csvfile').files[0];
+    if (!file) return setStatus("Please choose a CSV file first.", false);
+    setStatus("Parsing CSV...", true);
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      worker: true,
+      complete: async (results) => {
+        try {
+          const raw = results.data || [];
+
+          // gather unique VRNs from raw
+          const vrnSet = new Set();
+          for (const r of raw) {
+            const vrn = (r["Vehicle Registration Number"] || "").trim().toUpperCase();
+            if (vrn) vrnSet.add(vrn);
+          }
+          const vrns = Array.from(vrnSet);
+
+          // fetch DB state for VRNs (last 24 hours)
+          let prevStateMap = new Map();
+          if (vrns.length > 0) {
+            setStatus(`Fetching DB state for ${vrns.length} vehicles...`, true);
+            try {
+              prevStateMap = await fetchLastStateForVrns(vrns, 24);
+            } catch (err) {
+              console.error("Failed to fetch DB state:", err);
+              setStatus("Warning: failed to fetch DB state — falling back to file-only classification.", false);
+              prevStateMap = new Map();
+            }
+          }
+
+          const processed = processAndClassify(raw, prevStateMap);
+          window.processedRows = processed;
+          renderPreview(processed);
+          setStatus(`Preview ready — ${processed.length} processed rows (first 200 shown).`, true);
+        } catch (err) {
+          console.error(err);
+          setStatus("Processing error: " + (err.message || err), false);
+        }
+      },
+      error: (err) => {
+        console.error(err);
+        setStatus("CSV parse error: " + err.message, false);
+      }
+    });
+  };
+
+  document.getElementById('exportBtn').onclick = () => {
+    exportToExcel(window.processedRows || []);
+  };
+
+  document.getElementById('clearBtn').onclick = () => {
+    document.getElementById('csvfile').value = "";
+    window.processedRows = [];
+    document.getElementById('preview-table').innerHTML = "";
+    document.getElementById('preview-wrap').style.display = "none";
+    document.getElementById('inserted-wrap').style.display = "none";
+    setStatus("Cleared", true);
+  };
+
+  // ------------------ Insert: skip existing cch IDs, do not send journey_type/remarks, show DB-returned rows ------------------
+  document.getElementById('insertBtn').onclick = async () => {
+    const rows = window.processedRows || [];
+    if (!rows.length) return setStatus("No rows to insert. Run Preview first.", false);
+
+    // gather cch ids
+    const allCch = rows.map(r => r.cch_transaction_id).filter(Boolean).map(String);
+    const uniqueCch = Array.from(new Set(allCch));
+
+    setStatus("Checking existing transactions in Supabase...", true);
+    let existingCch = new Set();
+    try {
+      existingCch = await fetchExistingCchIds(uniqueCch);
+    } catch (err) {
+      console.error(err);
+      return setStatus("Error checking existing transactions: " + (err.message || err), false);
+    }
+
+    // split into toInsert vs skipped
+    const toInsert = [];
+    const skipped = [];
+    for (const r of rows) {
+      const id = r.cch_transaction_id ? String(r.cch_transaction_id) : null;
+      if (id && existingCch.has(id)) skipped.push(r);
+      else toInsert.push(r);
+    }
+
+    if (toInsert.length === 0) {
+      return setStatus(`No new rows to insert — all ${rows.length} rows already exist (skipped ${skipped.length}).`, true);
+    }
+
+    if (!confirm(`Insert ${toInsert.length} new rows into Supabase (skip ${skipped.length} existing)?`)) return;
+
+    setStatus(`Inserting ${toInsert.length} rows...`, true);
+    const BATCH = 400;
+    let insertedCount = 0;
+    const returnedRows = [];
+    try {
+      for (let i = 0; i < toInsert.length; i += BATCH) {
+        const batch = toInsert.slice(i, i + BATCH).map(r => sanitizeRowForInsert(r));
+        // do not send client_journey_type or client_remarks or journey_type/remarks
+        // ask DB to return inserted rows (including DB-computed journey_type/remarks)
+        const { data, error } = await supabase.from(DB_TABLE).insert(batch).select();
+        if (error) {
+          console.error("Supabase insert error:", error);
+          throw error;
+        }
+        insertedCount += (data && data.length) ? data.length : 0;
+        if (data && data.length) returnedRows.push(...data);
+      }
+
+      // show inserted summary and returned rows
+      document.getElementById('inserted-wrap').style.display = 'block';
+      document.getElementById('insert-summary').textContent =
+        `Inserted ${insertedCount} rows. Skipped ${skipped.length} (already existed).`;
+
+      // render returned rows (prefer main columns)
+      const table = document.getElementById('inserted-table');
+      table.innerHTML = '';
+      if (returnedRows.length) {
+        const prefer = ['cch_transaction_id','vehicle_registration_number','reader_read_time','transaction_amount','journey_type','remarks'];
+        const keys = new Set();
+        returnedRows.forEach(r => Object.keys(r).forEach(k => keys.add(k)));
+        const cols = Array.from(keys).sort((a,b) => {
+          const ai = prefer.indexOf(a), bi = prefer.indexOf(b);
+          if (ai >= 0 || bi >= 0) return (ai>=0?ai:999) - (bi>=0?bi:999);
+          return a.localeCompare(b);
+        });
+
+        const thead = "<tr>" + cols.map(c => `<th>${c}</th>`).join("") + "</tr>";
+        const body = returnedRows.map(r =>
+          "<tr>" + cols.map(c => `<td>${escapeHtml(String(r[c] === null || r[c] === undefined ? "" : r[c]))}</td>`).join("") + "</tr>"
+        ).join("");
+        table.innerHTML = "<thead>" + thead + "</thead><tbody>" + body + "</tbody>";
+      } else {
+        table.innerHTML = "<tr><td>No rows returned from DB.</td></tr>";
+      }
+
+      setStatus(`Insert completed: ${insertedCount} rows inserted.`, true);
+    } catch (err) {
+      console.error(err);
+      setStatus("Insert failed: " + (err.message || err), false);
+    }
+  };
+
+  // ready
+  setStatus("Ready. Choose CSV and click Preview.", true);
+
+})();
+</script>
+</body>
+</html>
