@@ -1,24 +1,10 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Your Site</title>
-
-  <!-- ✅ Google Analytics -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-ECTSM1RTFN"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-
-    gtag('config', 'G-ECTSM1RTFN');
-  </script>
-</head>
-<body>
   <meta charset="utf-8" />
-  <title>Annual Pass Transactions - Mundiyar Toll</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Annual Pass Transactions - Mundiyar Toll (Report)</title>
+
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f7fa; }
     .container { max-width: 1200px; margin: 0 auto; }
@@ -59,7 +45,6 @@
   </style>
 </head>
 <body>
-
   <!-- LOGIN SCREEN -->
   <div id="loginBox">
     <h2>Mundiyar Toll - Login</h2>
@@ -76,25 +61,12 @@
     <div class="container">
       <h2 class="page-title">Annual Pass Transactions - Mundiyar Toll</h2>
 
-      <!-- ================= CSV UPLOAD ================= -->
-      <div class="card">
-        <h3>Upload CSV → <code>pass_transactions</code></h3>
-        <div class="row">
-          <input type="file" id="csvFile" accept=".csv" />
-          <select id="csvDelimiter" title="Choose delimiter">
-            <option value=",">Comma</option>
-            <option value=";">Semicolon</option>
-            <option value="\t">Tab</option>
-          </select>
-          <button id="btnUpload">Parse & Upload</button>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <span id="uploadInfo" class="muted"></span>
-        </div>
-        <pre id="errorBox" class="mono" style="white-space:pre-wrap;color:#b30000;margin-top:8px;"></pre>
+      <!-- UPLOAD BUTTON -->
+      <div style="margin:20px 0; text-align:center;">
+        <button id="btnUpload">Upload</button>
       </div>
 
-      <!-- ================= REPORT FILTER ================= -->
+      <!-- REPORT FILTER -->
       <div class="card">
         <h3>Build Report (08:00 → 07:59)</h3>
         <form id="filterForm" class="row">
@@ -114,11 +86,11 @@
           </div>
         </form>
         <div class="row" style="margin-top:6px">
-          <span class="muted">Only transactions with <strong>Transaction Amount = 15</strong> are considered for compensation logic.</span>
+          <span class="muted">Report uses DB <code>journey_type</code> and considers transactions with <strong>transaction_amount = 15</strong>. Omitted = 3rd+ transactions within the same <strong>calendar day (00:00 → 23:59:59)</strong> per vehicle (excluded from reporting counts).</span>
         </div>
       </div>
 
-      <!-- ================= SUMMARY ================= -->
+      <!-- SUMMARY -->
       <div id="summaryWrap" class="card" style="display:none">
         <div class="summary">
           <div class="box"><div class="muted">Period</div><div id="sum_period" style="font-weight:700">—</div></div>
@@ -130,13 +102,14 @@
           <div class="box"><div class="muted">Omitted Transactions (3rd+)</div><div id="sum_omitted" style="font-weight:700">0</div></div>
         </div>
         <div class="row" style="margin-top:10px">
-          <button id="btnExportExcel" style="background:#28a745">Export to Excel</button>
+          <button id="btnExportExcel" style="background:#28a745">Export Report CSVs</button>
+          <button id="btnExportAll" style="background:#17a2b8">Export All Data (CSV)</button>
           <button id="btnPrint" style="background:#6c757d">Export to PDF (Print)</button>
           <span id="rowCount" class="muted" style="margin-left:10px"></span>
         </div>
       </div>
 
-      <!-- ================= DAILY ================= -->
+      <!-- DAILY -->
       <div id="dailyWrap" class="card" style="display:none">
         <h3>Daily Summary</h3>
         <table id="dailyTable">
@@ -166,9 +139,9 @@
         </table>
       </div>
 
-      <!-- ================= KEPT ================= -->
+      <!-- KEPT -->
       <div id="keptWrap" class="card" style="display:none">
-        <h3>Transactions (First 2 per Vehicle in 24hr.)</h3>
+        <h3>Transactions (Qualified per calendar day)</h3>
         <table id="keptTable">
           <thead>
             <tr>
@@ -176,16 +149,16 @@
               <th>Vehicle No</th>
               <th>Vehicle Type</th>
               <th>Amount</th>
-              <th>Journey Type</th>
+              <th>Journey Type (DB)</th>
             </tr>
           </thead>
           <tbody id="keptTbody"></tbody>
         </table>
       </div>
 
-      <!-- ================= OMITTED ================= -->
+      <!-- OMITTED -->
       <div id="omitWrap" class="card" style="display:none">
-        <h3>Omitted Transactions (3rd and after)</h3>
+        <h3>Omitted Transactions (3rd and after - per calendar day)</h3>
         <table id="omitTable">
           <thead>
             <tr>
@@ -193,7 +166,7 @@
               <th>Vehicle No</th>
               <th>Vehicle Type</th>
               <th>Amount</th>
-              <th>Txn No</th>
+              <th>Txn No (per calendar day)</th>
             </tr>
           </thead>
           <tbody id="omitTbody"></tbody>
@@ -202,695 +175,443 @@
     </div>
   </div>
 
-  <!-- ============ LOGIN SCRIPT ============ -->
+  <!-- libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
   <script>
+    // ---------- helper functions ----------
+    const rupee = n => '₹' + Number(n||0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+    const ymd = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    function toISO(s){
+      if (s == null || s === "") return null;
+      const str = String(s).trim();
+      const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+      if (m){
+        const [_, dd, MM, yyyy, hh='00', mm='00', ss='00'] = m;
+        const d = new Date(`${yyyy}-${MM.padStart(2,'0')}-${dd.padStart(2,'0')}T${hh.padStart(2,'0')}:${mm}:${ss}`);
+        return isNaN(d) ? null : d.toISOString();
+      }
+      const d = new Date(str);
+      return isNaN(d) ? null : d.toISOString();
+    }
+
+    // op-day utilities: start 08:00:00 and end next day 07:59:59.999 (reporting windows)
+    function opDayKey(ts){
+      const d = new Date(ts);
+      const shifted = new Date(d.getTime() - 8*60*60*1000); // shift back 8 hours
+      shifted.setHours(0,0,0,0);
+      return ymd(shifted);
+    }
+    function opDayWindowFor(dateYmd){
+      const base = new Date(dateYmd + 'T00:00:00');
+      const start = new Date(base); start.setHours(8,0,0,0);
+      const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999);
+      return { start, end };
+    }
+
+    // calendar-day key for omitted calculation (00:00 → 23:59:59)
+    function calendarDayKey(ts){
+      const d = new Date(ts);
+      d.setHours(0,0,0,0);
+      return ymd(d);
+    }
+
+    // ---------- constants & supabase ----------
+    const SINGLE_FARE = 110.0;
+    const RETURN_FARE = 55.0;
+
+    // Supabase client
+    const SUPABASE_URL = "https://pxcbdrkhhoqqhocmrtgj.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4Y2JkcmtoaG9xcWhvY21ydGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5NjIxMDcsImV4cCI6MjA3MjUzODEwN30.ufOrUdyi307pqmZdH5AS56UGmMti8n_2BW8YHK-2rk4";
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // ---------- fetch helper (paged) ----------
+    async function fetchAllPassTxns(startISO, endISO) {
+      const pageSize = 1000;
+      let from = 0, all = [], totalCount = null;
+      while (true) {
+        const { data, error, count } = await supabase
+          .from('pass_transactions')
+          .select(
+            'vehicle_registration_number, mapper_vehicle_class, reader_read_time, transaction_amount, cch_transaction_id, journey_type',
+            { count: 'exact' }
+          )
+          .gte('reader_read_time', startISO)
+          .lte('reader_read_time', endISO)
+          .eq('transaction_amount', 15)
+          .order('reader_read_time', { ascending: true })
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+        if (totalCount === null && typeof count === 'number') totalCount = count;
+        if (data && data.length) all = all.concat(data);
+        if (!data || data.length < pageSize) break;
+        from += pageSize;
+      }
+      return { rows: all, count: totalCount ?? all.length };
+    }
+
+    // ---------- fetch ALL rows (no date filter) and export CSV ----------
+    async function fetchAllRowsAllColumnsAndDownloadCSV() {
+      try {
+        const pageSize = 1000;
+        let from = 0;
+        let all = [];
+        while (true) {
+          const { data, error } = await supabase
+            .from('pass_transactions')
+            .select('*')
+            .order('cch_transaction_id', { ascending: true })
+            .range(from, from + pageSize - 1);
+
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          all = all.concat(data);
+          if (data.length < pageSize) break;
+          from += pageSize;
+        }
+
+        if (!all.length) {
+          alert('No rows found in pass_transactions.');
+          return;
+        }
+
+        // Build header set (union of keys)
+        const keysSet = new Set();
+        all.forEach(r => Object.keys(r || {}).forEach(k => keysSet.add(k)));
+        const keys = Array.from(keysSet);
+
+        // CSV escape and row building
+        const escapeCell = (v) => {
+          if (v === null || v === undefined) return '';
+          if (typeof v === 'object') v = JSON.stringify(v);
+          const s = String(v);
+          if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
+            return `"${s.replace(/"/g, '""')}"`;
+          }
+          return s;
+        };
+
+        const headerLine = keys.map(k => `"${String(k).replace(/"/g,'""')}"`).join(',');
+        const lines = [headerLine];
+        for (const row of all) {
+          const line = keys.map(k => escapeCell(row[k])).join(',');
+          lines.push(line);
+        }
+        const csv = lines.join('\n');
+
+        // download
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const now = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+        a.download = `pass_transactions_all_${now}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error('Export all data error', err);
+        alert('Failed to export all data: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    // ---------- REPORT submit handler (journey_type exclusively from DB) ----------
+    document.getElementById('filterForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const from = document.getElementById('fromDate').value;
+        const to = document.getElementById('toDate').value;
+        if (!from || !to) { alert('Select dates'); return; }
+
+        const { start: globalStart } = opDayWindowFor(from);
+        const { end: globalEnd } = opDayWindowFor(to);
+
+        // 1) Fetch in-window transactions (reader_read_time) to find vehicles
+        let inWindowRows = [], totalCount = 0;
+        try {
+          const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
+          inWindowRows = res.rows || [];
+          totalCount = res.count || inWindowRows.length;
+        } catch (err) {
+          alert('Initial fetch failed: ' + (err && err.message ? err.message : err));
+          return;
+        }
+
+        if (!inWindowRows.length) {
+          alert('No matching transactions in the searched date range.');
+          document.getElementById('summaryWrap').style.display = 'none';
+          document.getElementById('dailyWrap').style.display = 'none';
+          document.getElementById('keptWrap').style.display = 'none';
+          document.getElementById('omitWrap').style.display = 'none';
+          return;
+        }
+
+        // 2) Unique vehicle list
+        const vrnSet = new Set();
+        for (const r of inWindowRows) {
+          const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+          if (vrn) vrnSet.add(vrn);
+        }
+        const vrnArray = Array.from(vrnSet);
+        if (!vrnArray.length) { alert('No valid vehicle numbers found.'); return; }
+
+        // 3) Fetch full history for those vehicles up to globalEnd (only transaction_amount = 15)
+        const pageSize = 1000;
+        const vrnBatchSize = 300;
+        let allHistory = [];
+        try {
+          for (let i = 0; i < vrnArray.length; i += vrnBatchSize) {
+            const batch = vrnArray.slice(i, i + vrnBatchSize);
+            let fromRange = 0;
+            while (true) {
+              const { data, error } = await supabase
+                .from('pass_transactions')
+                .select('vehicle_registration_number, mapper_vehicle_class, reader_read_time, transaction_amount, cch_transaction_id, journey_type', { count: 'estimated' })
+                .in('vehicle_registration_number', batch)
+                .lte('reader_read_time', globalEnd.toISOString())
+                .eq('transaction_amount', 15)
+                .order('reader_read_time', { ascending: true })
+                .range(fromRange, fromRange + pageSize - 1);
+
+              if (error) throw error;
+              if (data && data.length) allHistory = allHistory.concat(data);
+              if (!data || data.length < pageSize) break;
+              fromRange += pageSize;
+            }
+          }
+        } catch (err) {
+          alert('Failed fetching full history for vehicles: ' + (err && err.message ? err.message : err));
+          return;
+        }
+
+        if (!allHistory.length) { alert('No historical transactions found.'); return; }
+
+        // 4) Sort & process
+        allHistory.sort((a,b) => new Date(a.reader_read_time) - new Date(b.reader_read_time));
+
+        const byOp = new Map();
+        const keptRows = [], omittedRows = [];
+        const vehDayCounts = new Map(); // vrn -> Map(calendarDay -> count)
+
+        function ensureOp(key) {
+          if (!byOp.has(key)) byOp.set(key, { total_txn: 0, qualified: 0, singles: 0, returns: 0, omitted: 0 });
+          return byOp.get(key);
+        }
+
+        for (const r of allHistory) {
+          const ts = new Date(r.reader_read_time);
+          const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
+          if (!vrn) continue;
+
+          // op-day key (08:00->07:59) — used for reporting windows
+          const currentOpKey = opDayKey(r.reader_read_time);
+
+          // calendar day key (00:00->23:59) — used for omitted detection
+          const calDayKey = calendarDayKey(r.reader_read_time);
+
+          // init dayCounts for vehicle
+          if (!vehDayCounts.has(vrn)) vehDayCounts.set(vrn, new Map());
+          const dayMap = vehDayCounts.get(vrn);
+          const prevCount = dayMap.get(calDayKey) || 0;
+          const newCount = prevCount + 1;
+          dayMap.set(calDayKey, newCount);
+
+          // ALWAYS increment total_txn for the op-day if txn is inside searched window
+          if (ts >= globalStart && ts <= globalEnd) {
+            const op = ensureOp(currentOpKey);
+            op.total_txn++;
+          }
+
+          // If count in the calendar day > 2 => NOT qualified (omitted)
+          if (newCount > 2) {
+            if (ts >= globalStart && ts <= globalEnd) {
+              const op = ensureOp(currentOpKey);
+              op.omitted++;
+              omittedRows.push({
+                TransactionProcessedTime: r.reader_read_time,
+                VehicleRegistrationNumber: vrn,
+                MapperVehicleClass: r.mapper_vehicle_class,
+                TransactionAmount: r.transaction_amount,
+                txn_no: newCount,
+                CCH_Transaction_ID: r.cch_transaction_id
+              });
+            }
+            // omitted transactions are excluded from qualified counts and from any alternation (we no longer do alternation)
+            continue;
+          }
+
+          // --- Qualified (kept) transaction: use journey_type from DB ONLY ---
+          const rawJourneyType = (r.journey_type || '').toString().trim();
+          const journeyType = rawJourneyType ? rawJourneyType : 'UNKNOWN';
+
+          // record counts for op-day if txn inside window (determine singles/returns purely by examining journey_type text)
+          if (ts >= globalStart && ts <= globalEnd) {
+            const op = ensureOp(currentOpKey);
+            op.qualified++;
+            // increment singles/returns based on DB journey_type text (case-insensitive match)
+            if (/single/i.test(journeyType)) op.singles++; else if (/return/i.test(journeyType)) op.returns++; else {
+              // unknown journey type — doesn't count towards singles or returns
+            }
+
+            keptRows.push({
+              TransactionProcessedTime: r.reader_read_time,
+              VehicleRegistrationNumber: vrn,
+              MapperVehicleClass: r.mapper_vehicle_class,
+              TransactionAmount: r.transaction_amount,
+              Journey_Type: journeyType,
+              CCH_Transaction_ID: r.cch_transaction_id
+            });
+          }
+        } // end for allHistory
+
+        // 5) Build daily rows & totals
+        const labels = [];
+        { const d = new Date(from + 'T00:00:00'); const toD = new Date(to + 'T00:00:00');
+          while (d <= toD) { labels.push(ymd(d)); d.setDate(d.getDate()+1); }
+        }
+
+        const dailyRows = labels.map(key => {
+          const o = byOp.get(key) || { total_txn:0, qualified:0, singles:0, returns:0, omitted:0 };
+          const compensation = (o.singles || 0) * SINGLE_FARE + (o.returns || 0) * RETURN_FARE;
+          return {
+            period: key,
+            total_txn: o.total_txn || 0,
+            qualified_txn: o.qualified || 0,
+            total_single: o.singles || 0,
+            total_return: o.returns || 0,
+            compensation,
+            omitted: o.omitted || 0
+          };
+        });
+
+        const tot = {
+          period: 'TOTAL',
+          total_txn: dailyRows.reduce((a,b)=>a+b.total_txn,0),
+          qualified_txn: dailyRows.reduce((a,b)=>a+b.qualified_txn,0),
+          total_single: dailyRows.reduce((a,b)=>a+b.total_single,0),
+          total_return: dailyRows.reduce((a,b)=>a+b.total_return,0),
+          compensation: dailyRows.reduce((a,b)=>a + (b.compensation||0), 0),
+          omitted: dailyRows.reduce((a,b)=>a + (b.omitted||0), 0)
+        };
+
+        const summary = {
+          period: `${from} to ${to}`,
+          total_single: tot.total_single,
+          single_fare: SINGLE_FARE,
+          total_return: tot.total_return,
+          return_fare: RETURN_FARE,
+          total_comp: tot.compensation,
+          omitted: tot.omitted
+        };
+
+        // ---------- RENDER ----------
+        document.getElementById('sum_period').textContent = summary.period;
+        document.getElementById('sum_total_single').textContent = summary.total_single;
+        document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
+        document.getElementById('sum_total_return').textContent = summary.total_return;
+        document.getElementById('sum_return_fare').textContent = RETURN_FARE;
+        document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
+        document.getElementById('sum_omitted').textContent = summary.omitted;
+        document.getElementById('summaryWrap').style.display = 'block';
+
+        const rowsConsidered = byOp.size
+          ? Array.from(byOp.values()).reduce((acc,o)=>acc + (o.total_txn||0), 0)
+          : keptRows.length + omittedRows.length;
+        document.getElementById('rowCount').textContent = `Rows considered: ${rowsConsidered} of ${totalCount}`;
+
+        // daily table
+        const dailyTbody = document.getElementById('dailyTbody');
+        dailyTbody.innerHTML = dailyRows.map(r => `
+          <tr>
+            <td>${r.period}</td>
+            <td>${r.total_txn}</td>
+            <td>${r.qualified_txn}</td>
+            <td>${r.total_single}</td>
+            <td>${r.total_return}</td>
+            <td>${rupee(r.compensation)}</td>
+            <td>${r.omitted}</td>
+          </tr>
+        `).join('');
+        document.getElementById('tot_total_txn').textContent = tot.total_txn;
+        document.getElementById('tot_qualified_txn').textContent = tot.qualified_txn;
+        document.getElementById('tot_total_single').textContent = tot.total_single;
+        document.getElementById('tot_total_return').textContent = tot.total_return;
+        document.getElementById('tot_compensation').textContent = rupee(tot.compensation);
+        document.getElementById('tot_omitted').textContent = tot.omitted;
+        document.getElementById('dailyWrap').style.display = 'block';
+
+        // kept table
+        const keptTb = document.getElementById('keptTbody');
+        keptTb.innerHTML = keptRows.map(r => `
+          <tr>
+            <td>${new Date(r.TransactionProcessedTime).toLocaleString()}</td>
+            <td>${r.VehicleRegistrationNumber}</td>
+            <td>${r.MapperVehicleClass ?? ''}</td>
+            <td>${r.TransactionAmount}</td>
+            <td>${r.Journey_Type}</td>
+          </tr>
+        `).join('');
+        document.getElementById('keptWrap').style.display = keptRows.length ? 'block' : 'none';
+
+        // omitted table
+        const omitTb = document.getElementById('omitTbody');
+        omitTb.innerHTML = omittedRows.map(r => `
+          <tr>
+            <td>${new Date(r.TransactionProcessedTime).toLocaleString()}</td>
+            <td>${r.VehicleRegistrationNumber}</td>
+            <td>${r.MapperVehicleClass ?? ''}</td>
+            <td>${r.TransactionAmount}</td>
+            <td>${r.txn_no}</td>
+          </tr>
+        `).join('');
+        document.getElementById('omitWrap').style.display = omittedRows.length ? 'block' : 'none';
+
+        window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
+      } catch (err) {
+        console.error('Report handler error', err);
+        alert('An error occurred while building the report: ' + (err && err.message ? err.message : err));
+      }
+    });
+
+    // refresh button
+    document.getElementById('btnRefresh').onclick = () => {
+      const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
+    };
+
+    // ---------- Export All Data button wiring ----------
+    document.getElementById('btnExportAll').onclick = async () => {
+      if (!confirm('This will download ALL rows from pass_transactions as CSV. Continue?')) return;
+      await fetchAllRowsAllColumnsAndDownloadCSV();
+    };
+
+    // ---------- simple login ----------
     function checkLogin(){
       const enteredUser = document.getElementById('usernameInput').value.trim();
       const enteredPass = document.getElementById('passwordInput').value;
-
-      // ✅ Set allowed usernames + passwords here
       const validUsers = { "admin":"9540595577", "manager":"abcd", "Likhar":"8888416918", "Kishor":"998704077" };
 
       if(validUsers[enteredUser] && validUsers[enteredUser] === enteredPass){
         document.getElementById('loginBox').style.display = 'none';
         document.getElementById('app').style.display = 'block';
+        document.getElementById('loginError').style.display = 'none';
       } else {
         document.getElementById('loginError').style.display = 'block';
       }
     }
-  </script>
 
-  <!-- ============ SUPABASE + CSV LOGIC ============ -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-
-  <script>
-      const log = (...a) => { try { console.log(...a); } catch(_){} };
-
-      // Supabase
-      const SUPABASE_URL = "https://pxcbdrkhhoqqhocmrtgj.supabase.co";
-      const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4Y2JkcmtoaG9xcWhvY21ydGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5NjIxMDcsImV4cCI6MjA3MjUzODEwN30.ufOrUdyi307pqmZdH5AS56UGmMti8n_2BW8YHK-2rk4";
-      const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-      // fares
-      const SINGLE_FARE = 110.0;
-      const RETURN_FARE = 55.0;
-
-      const HEADER_MAP = {
-        "Entry Plaza ID": "entry_plaza_id",
-        "Entry Lane ID": "entry_lane_id",
-        "Exit Plaza ID": "exit_plaza_id",
-        "Exit Lane ID": "exit_lane_id",
-        "Tag ID": "tag_id",
-        "Vehicle Registration Number": "vehicle_registration_number",
-        "Plaza Transaction ID": "plaza_transaction_id",
-        "CCH Transaction ID": "cch_transaction_id",
-        "AVC Class": "avc_class",
-        "Mapper Vehicle Class": "mapper_vehicle_class",
-        "Reader Read Time": "reader_read_time",
-        "Transaction Received Time": "transaction_received_time",
-        "Transaction Processed Time": "transaction_processed_time",
-        "Transaction Amount": "transaction_amount",
-        "Accepted Amount": "accepted_amount",
-        "Transaction Status": "transaction_status",
-        "Reason Code": "reason_code",
-        "Fare Type": "fare_type",
-        "Chargeback Raised?": "chargeback_raised",
-        "Chargeback Amount Accepted": "chargeback_amount_accepted",
-        "Chargeback Settlement Date": "chargeback_settlement_date",
-        "Adjustment Raised": "adjustment_raised",
-        "Adjustment Amount Accepted": "adjustment_amount_accepted",
-        "Adjustment Settlement Date": "adjustment_settlement_date",
-        "Remarks": "remarks"
-      };
-
-      const rupee = n => '₹' + Number(n||0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-
-      const ymd = (d) => {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        return `${y}-${m}-${day}`;
-      };
-
-      function toISO(s){
-        if (s == null || s === "") return null;
-        const str = String(s).trim();
-        const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-        if (m){
-          const [_, dd, MM, yyyy, hh='00', mm='00', ss='00'] = m;
-          const d = new Date(`${yyyy}-${MM.padStart(2,'0')}-${dd.padStart(2,'0')}T${hh.padStart(2,'0')}:${mm}:${ss}`);
-          return isNaN(d) ? null : d.toISOString();
-        }
-        const d = new Date(str);
-        return isNaN(d) ? null : d.toISOString();
-      }
-      function toBool(s){
-        if (s == null) return null;
-        const v = String(s).trim().toLowerCase();
-        if (["yes","y","true","1"].includes(v)) return true;
-        if (["no","n","false","0",""].includes(v)) return false;
-        return null;
-      }
-      function toNum(s){
-        if (s == null || s === "") return null;
-        const n = Number(String(s).replace(/,/g,""));
-        return isNaN(n) ? null : n;
-      }
-
-      function opDayKey(ts){
-        const d = new Date(ts);
-        const shifted = new Date(d.getTime() - 8*60*60*1000);
-        shifted.setHours(0,0,0,0);
-        return ymd(shifted);
-      }
-      function opDayWindowFor(dateYmd){
-        const base = new Date(dateYmd + 'T00:00:00');
-        const start = new Date(base); start.setHours(8,0,0,0);
-        const end = new Date(base); end.setDate(end.getDate()+1); end.setHours(7,59,59,999);
-        return { start, end };
-      }
-
-      async function fetchAllPassTxns(startISO, endISO) {
-        const pageSize = 1000;
-        let from = 0, all = [], totalCount = null;
-        while (true) {
-          const { data, error, count } = await supabase
-            .from('pass_transactions')
-            .select(
-  'vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount, cch_transaction_id',
-  { count: 'exact' }
-)
-            .gte('transaction_processed_time', startISO)
-            .lte('transaction_processed_time', endISO)
-            .eq('transaction_amount', 15)
-            .order('transaction_processed_time', { ascending: true })
-            .range(from, from + pageSize - 1);
-
-          if (error) throw error;
-          if (totalCount === null && typeof count === 'number') totalCount = count;
-          if (data && data.length) all = all.concat(data);
-          if (!data || data.length < pageSize) break;
-          from += pageSize;
-        }
-        return { rows: all, count: totalCount ?? all.length };
-      }
-
-      // CSV → DB
-      document.getElementById('btnUpload').onclick = async () => {
-        const file = document.getElementById('csvFile').files[0];
-        const delim = document.getElementById('csvDelimiter').value;
-        const info = document.getElementById('uploadInfo');
-        const errBox = document.getElementById('errorBox');
-        errBox.textContent = ""; info.textContent = "";
-        if(!file){ alert('Choose a CSV file'); return; }
-
-        info.textContent = 'Parsing CSV...';
-        Papa.parse(file, {
-          header: true, skipEmptyLines: true,
-          delimiter: (delim === '\\t' ? '\t' : delim),
-          complete: async (res) => {
-            const rows = res.data;
-            if(!rows.length){ info.textContent = 'No rows found.'; return; }
-            if (!('CCH Transaction ID' in rows[0])) {
-              info.textContent = 'Missing required header: "CCH Transaction ID".';
-              errBox.textContent = 'Ensure your CSV column header exactly matches: CCH Transaction ID';
-              return;
-            }
-            const mapped = rows.map(r => {
-              const obj = {};
-              for (const [csvKey, dbKey] of Object.entries(HEADER_MAP)) {
-                let val = r[csvKey];
-                if (dbKey === 'reader_read_time' ||
-                    dbKey === 'transaction_received_time' ||
-                    dbKey === 'transaction_processed_time' ||
-                    dbKey.endsWith('_date')) {
-                  val = toISO(val);
-                } else if (dbKey === 'chargeback_raised' || dbKey === 'adjustment_raised') {
-                  val = toBool(val);
-                } else if (['transaction_amount','accepted_amount','chargeback_amount_accepted','adjustment_amount_accepted'].includes(dbKey)) {
-                  val = toNum(val);
-                } else if (dbKey === 'vehicle_registration_number') {
-                  val = (val ?? '').toString().trim().toUpperCase() || null;
-                } else {
-                  val = (val === '' ? null : val);
-                }
-                obj[dbKey] = val;
-              }
-              return obj;
-            });
-
-            const chunkSize = 500;
-            let ok = 0, failedBatches = 0;
-            info.textContent = `Uploading... (0/${mapped.length})`;
-
-            for (let i = 0; i < mapped.length; i += chunkSize) {
-              const part = mapped.slice(i, i + chunkSize);
-              const { error } = await supabase
-                .from('pass_transactions')
-                .upsert(part, { onConflict: 'cch_transaction_id', ignoreDuplicates: true });
-
-              if (error) {
-                failedBatches++;
-                errBox.textContent += `Batch ${i/chunkSize + 1}: ${error.message}\n`;
-              } else { ok += part.length; }
-              info.textContent = `Uploaded ${ok}/${mapped.length}. ${failedBatches ? 'Failed batches: ' + failedBatches : ''}`;
-            }
-
-            info.className = failedBatches ? 'warn' : 'success';
-            if (!failedBatches) info.textContent += '  ✓ All good.';
-          },
-          error: (e) => {
-            info.textContent = 'CSV parse error.';
-            document.getElementById('errorBox').textContent = String(e?.message || e);
-          }
-        });
-      };
-
-      // REPORT
-      // safer submit handler (replace your existing one)
-document.getElementById('filterForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    const from = document.getElementById('fromDate').value;
-    const to = document.getElementById('toDate').value;
-    if (!from || !to) { alert('Select dates'); return; }
-
-    const { start: globalStart } = opDayWindowFor(from);
-    const { end: globalEnd } = opDayWindowFor(to);
-
-    // 1) Fetch in-window txns to discover vehicles
-    let inWindowRows = [], totalCount = 0;
-    try {
-      const res = await fetchAllPassTxns(globalStart.toISOString(), globalEnd.toISOString());
-      inWindowRows = res.rows || [];
-      totalCount = res.count || inWindowRows.length;
-    } catch (err) {
-      alert('Initial fetch failed: ' + (err && err.message ? err.message : err));
-      return;
-    }
-
-    if (!inWindowRows.length) {
-      alert('No matching transactions in the searched date range.');
-      document.getElementById('summaryWrap').style.display = 'none';
-      document.getElementById('dailyWrap').style.display = 'none';
-      document.getElementById('keptWrap').style.display = 'none';
-      document.getElementById('omitWrap').style.display = 'none';
-      return;
-    }
-
-    // 2) Unique vehicle list
-    const vrnSet = new Set();
-    for (const r of inWindowRows) {
-      const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-      if (vrn) vrnSet.add(vrn);
-    }
-    const vrnArray = Array.from(vrnSet);
-    if (!vrnArray.length) { alert('No valid vehicle numbers found.'); return; }
-
-    // 3) Fetch full history for those vehicles up to globalEnd
-    const pageSize = 1000;
-    const vrnBatchSize = 300;
-    let allHistory = [];
-    try {
-      for (let i = 0; i < vrnArray.length; i += vrnBatchSize) {
-        const batch = vrnArray.slice(i, i + vrnBatchSize);
-        let fromRange = 0;
-        while (true) {
-          const { data, error } = await supabase
-            .from('pass_transactions')
-            .select('vehicle_registration_number, mapper_vehicle_class, transaction_processed_time, transaction_amount, cch_transaction_id', { count: 'estimated' })
-            .in('vehicle_registration_number', batch)
-            .lte('transaction_processed_time', globalEnd.toISOString())
-            .eq('transaction_amount', 15)
-            .order('transaction_processed_time', { ascending: true })
-            .range(fromRange, fromRange + pageSize - 1);
-
-          if (error) throw error;
-          if (data && data.length) allHistory = allHistory.concat(data);
-          if (!data || data.length < pageSize) break;
-          fromRange += pageSize;
-        }
-      }
-    } catch (err) {
-      alert('Failed fetching full history for vehicles: ' + (err && err.message ? err.message : err));
-      return;
-    }
-
-    if (!allHistory.length) { alert('No historical transactions found.'); return; }
-
-    // 4) Sort & process (state machine + per-op-day omitted reset)
-    allHistory.sort((a,b) => new Date(a.transaction_processed_time) - new Date(b.transaction_processed_time));
-
-    const byOp = new Map();
-    const keptRows = [], omittedRows = [];
-    const vehState = new Map();
-    const MS_24H = 24 * 60 * 60 * 1000;
-    function ensureOp(key) {
-      if (!byOp.has(key)) byOp.set(key, { total_txn: 0, qualified: 0, singles: 0, returns: 0, omitted: 0 });
-      return byOp.get(key);
-    }
-
-    for (const r of allHistory) {
-      const ts = new Date(r.transaction_processed_time);
-      const vrn = (r.vehicle_registration_number || '').toString().trim().toUpperCase();
-      if (!vrn) continue;
-
-      const currentOpKey = opDayKey(r.transaction_processed_time);
-
-      if (!vehState.has(vrn)) {
-        vehState.set(vrn, {
-          keptTimestamps: [],
-          state: 'none',
-          dailyOpKey: null,
-          dailyKeptCount: 0,
-          dailyTotalCount: 0
-        });
-      }
-      const s = vehState.get(vrn);
-
-      // reset per-op-day counters when op-day changes
-      if (s.dailyOpKey !== currentOpKey) {
-        s.dailyOpKey = currentOpKey;
-        s.dailyKeptCount = 0;
-        s.dailyTotalCount = 0;
-      }
-
-      // increment total txn ordinal for the day (used for txn_no)
-      s.dailyTotalCount++;
-
-      // purge kept timestamps older than 24h
-      s.keptTimestamps = s.keptTimestamps.filter(t => (ts - t) <= MS_24H);
-
-      // If already 2 kept txns in same op-day => omitted (3rd+)
-      if (s.dailyKeptCount >= 2) {
-        if (ts >= globalStart && ts <= globalEnd) {
-          const opKey = opDayKey(r.transaction_processed_time);
-          const op = ensureOp(opKey);
-          op.total_txn++;
-          op.omitted++;
-          omittedRows.push({
-            TransactionProcessedTime: r.transaction_processed_time,
-            VehicleRegistrationNumber: vrn,
-            MapperVehicleClass: r.mapper_vehicle_class,
-            TransactionAmount: r.transaction_amount,
-            txn_no: s.dailyTotalCount,
-            CCH_Transaction_ID: r.cch_transaction_id
-          });
-        }
-        continue;
-      }
-
-      // Kept: decide Single vs Return using rolling 24h + state
-      const lastKept = s.keptTimestamps.length ? s.keptTimestamps[s.keptTimestamps.length - 1] : null;
-      const within24hOfLastKept = lastKept ? ((ts - lastKept) <= MS_24H) : false;
-
-      let journeyType;
-      if (within24hOfLastKept && s.state === 'pending_return') {
-        journeyType = 'Return Journey';
-        s.state = 'none';
-        s.keptTimestamps.push(ts);
-      } else {
-        journeyType = 'Single Journey';
-        s.state = 'pending_return';
-        s.keptTimestamps.push(ts);
-      }
-
-      // increment per-op-day kept counter
-      s.dailyKeptCount++;
-
-      // if inside searched window, record
-      if (ts >= globalStart && ts <= globalEnd) {
-        const opKey = opDayKey(r.transaction_processed_time);
-        const op = ensureOp(opKey);
-        op.total_txn++;
-        op.qualified++;
-        if (journeyType === 'Single Journey') op.singles++; else op.returns++;
-
-        keptRows.push({
-          TransactionProcessedTime: r.transaction_processed_time,
-          VehicleRegistrationNumber: vrn,
-          MapperVehicleClass: r.mapper_vehicle_class,
-          TransactionAmount: r.transaction_amount,
-          Journey_Type: journeyType,
-          CCH_Transaction_ID: r.cch_transaction_id
-        });
-      }
-    } // end for allHistory
-
-    // 5) Build daily rows & totals (same as your original)
-    const labels = [];
-    { const d = new Date(from + 'T00:00:00'); const toD = new Date(to + 'T00:00:00');
-      while (d <= toD) { labels.push(ymd(d)); d.setDate(d.getDate()+1); }
-    }
-
-    const dailyRows = labels.map(key => {
-      const o = byOp.get(key) || { total_txn:0, qualified:0, singles:0, returns:0, omitted:0 };
-      const compensation = (o.singles || 0) * SINGLE_FARE + (o.returns || 0) * RETURN_FARE;
-      return {
-        period: key,
-        total_txn: o.total_txn || 0,
-        qualified_txn: o.qualified || 0,
-        total_single: o.singles || 0,
-        total_return: o.returns || 0,
-        compensation,
-        omitted: o.omitted || 0
-      };
-    });
-
-    const tot = {
-      period: 'TOTAL',
-      total_txn: dailyRows.reduce((a,b)=>a+b.total_txn,0),
-      qualified_txn: dailyRows.reduce((a,b)=>a+b.qualified_txn,0),
-      total_single: dailyRows.reduce((a,b)=>a+b.total_single,0),
-      total_return: dailyRows.reduce((a,b)=>a+b.total_return,0),
-      compensation: dailyRows.reduce((a,b)=>a + (b.compensation||0), 0),
-      omitted: dailyRows.reduce((a,b)=>a + (b.omitted||0), 0)
+    // ---------- Upload button ----------
+    document.getElementById("btnUpload").onclick = () => {
+      window.location.href = "Upload.html";  // navigate to second page in same repo
     };
-
-    const summary = {
-      period: `${from} to ${to}`,
-      total_single: tot.total_single,
-      single_fare: SINGLE_FARE,
-      total_return: tot.total_return,
-      return_fare: RETURN_FARE,
-      total_comp: tot.compensation,
-      omitted: tot.omitted
-    };
-
-    // render UI (same as before)
-    document.getElementById('sum_period').textContent = summary.period;
-    document.getElementById('sum_total_single').textContent = summary.total_single;
-    document.getElementById('sum_single_fare').textContent = SINGLE_FARE;
-    document.getElementById('sum_total_return').textContent = summary.total_return;
-    document.getElementById('sum_return_fare').textContent = RETURN_FARE;
-    document.getElementById('sum_total_comp').textContent = rupee(summary.total_comp);
-    document.getElementById('sum_omitted').textContent = summary.omitted;
-    document.getElementById('summaryWrap').style.display = 'block';
-    const rowsConsidered = byOp.size ? Array.from(byOp.values()).reduce((acc,o)=>acc + (o.total_txn||0), 0) : keptRows.length + omittedRows.length;
-    document.getElementById('rowCount').textContent = `Rows considered: ${rowsConsidered} of ${totalCount}`;
-
-    // populate daily/kept/omitted tables (your existing rendering code can be reused)
-    // (I'll assume you keep the same rendering snippets you already had below)
-    // ...
-    window.__LAST = { summary, dailyRows, tot, keptRows, omittedRows };
-
-  } catch (err) {
-    // Any unexpected error — log and alert so the page won't reload silently.
-    console.error('Report handler error', err);
-    alert('An error occurred while building the report: ' + (err && err.message ? err.message : err));
-  }
-});
-
-
-      document.getElementById('btnRefresh').onclick = () => {
-        const evt = new Event('submit'); document.getElementById('filterForm').dispatchEvent(evt);
-      };
-
-      // ===== Excel 2003 XML (.xls) generator (no libs) =====
-      function xmlEsc(s){
-        return String(s ?? '')
-          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-          .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
-      }
-      const row = cells => `<Row>${cells}</Row>`;
-      const cell = ({v=null,type='String',style=null}) => {
-        const styleAttr = style ? ` ss:StyleID="${style}"` : '';
-        const val = (v===null || v===undefined) ? '' : v;
-        return `<Cell${styleAttr}><Data ss:Type="${type}">${xmlEsc(val)}</Data></Cell>`;
-      };
-
-      // Build ONE combined "Summary" sheet (Overall + Daily)
-      function buildSummarySheet({summary, dailyRows, tot}) {
-  // columns & widths (first column was wide — reduced here)
-  // tweak these numbers (units are Excel column width) to get the exact appearance you want.
-  const widths = [120, 90, 80, 90, 80, 100, 90];
-
-  // ---- Overall Summary section
-  const titleOverall = row( cell({ v:'Overall Summary', style:'sTitle' }) );
-  const overallHeader = '<Row ss:AutoFitHeight="1">' +
-  cell({v:'Period', style:'sHead'}) +
-  cell({v:'Total Single Journeys', style:'sHead'}) +
-  cell({v:'Single Fare (B)', style:'sHead'}) +
-  cell({v:'Total Return Journeys', style:'sHead'}) +
-  cell({v:'Return Fare (D)', style:'sHead'}) +
-  cell({v:'Total Compensation', style:'sHead'}) +
-  cell({v:'Omitted Transactions (3rd+)', style:'sHead'}) +
-  '</Row>';
-  const overallData = row(
-    cell({v:summary.period, style:'sTxt'}) +
-    cell({v:Number(summary.total_single), type:'Number', style:'sNum'}) +
-    cell({v:Number(summary.single_fare), type:'Number', style:'sCur'}) +
-    cell({v:Number(summary.total_return), type:'Number', style:'sNum'}) +
-    cell({v:Number(summary.return_fare), type:'Number', style:'sCur'}) +
-    cell({v:Number(summary.total_comp), type:'Number', style:'sCur'}) +
-    cell({v:Number(summary.omitted), type:'Number', style:'sNum'})
-  );
-
-  const blank = row( cell({v:''}) );
-
-  // ---- Daily Summary section (with TOTAL row)
-  const titleDaily = row( cell({ v:'Daily Summary', style:'sTitle' }) );
-
-  const dailyHeader = '<Row ss:AutoFitHeight="1">' +
-  cell({v:'Period', style:'sHead'}) +
-  cell({v:'Total Annual Pass Transactions', style:'sHead'}) +
-  cell({v:'Total Qualified Transactions', style:'sHead'}) +
-  cell({v:'Total Single Journeys', style:'sHead'}) +
-  cell({v:'Total Return Journeys', style:'sHead'}) +
-  cell({v:'Total Compensation', style:'sHead'}) +
-  cell({v:'Omitted Transactions', style:'sHead'}) +
-  '</Row>';
-
-  const dailyBody = dailyRows.map(r => row(
-    cell({v:r.period, style:'sTxt'}) +
-    cell({v:Number(r.total_txn), type:'Number', style:'sNum'}) +
-    cell({v:Number(r.qualified_txn), type:'Number', style:'sNum'}) +
-    cell({v:Number(r.total_single), type:'Number', style:'sNum'}) +
-    cell({v:Number(r.total_return), type:'Number', style:'sNum'}) +
-    cell({v:Number(r.compensation), type:'Number', style:'sCur'}) +
-    cell({v:Number(r.omitted), type:'Number', style:'sNum'})
-  )).join('');
-
-  const dailyTotal = row(
-    cell({v:'TOTAL', style:'sHead'}) +
-    cell({v:Number(tot.total_txn), type:'Number', style:'sNumBold'}) +
-    cell({v:Number(tot.qualified_txn), type:'Number', style:'sNumBold'}) +
-    cell({v:Number(tot.total_single), type:'Number', style:'sNumBold'}) +
-    cell({v:Number(tot.total_return), type:'Number', style:'sNumBold'}) +
-    cell({v:Number(tot.compensation), type:'Number', style:'sCurBold'}) +
-    cell({v:Number(tot.omitted), type:'Number', style:'sNumBold'})
-  );
-
-  const colsXml = widths.map(w => `<Column ss:Width="${w}"/>`).join('');
-
-  return `
-    <Worksheet ss:Name="Summary">
-      <Table>
-        ${colsXml}
-        ${titleOverall}
-        ${overallHeader}
-        ${overallData}
-        ${blank}
-        ${titleDaily}
-        ${dailyHeader}
-        ${dailyBody}
-        ${dailyTotal}
-      </Table>
-    </Worksheet>
-  `;
-}
-
-      function buildListSheet({name, rows, columns}) {
-        const colsXml = columns.map(c => `<Column ss:Width="${c.w || 120}"/>`).join('');
-        const header = '<Row ss:AutoFitHeight="1">' + columns.map(c => cell({v:c.h, style:'sHead'})).join('') + '</Row>';
-        const body = rows.map(r => row(columns.map(c => {
-          const val = typeof c.a === 'function' ? c.a(r) : r[c.a];
-          if (c.t === 'n') return cell({v:Number(val ?? 0), type:'Number', style: c.s || 'sNum'});
-          if (c.t === 'c') return cell({v:Number(val ?? 0), type:'Number', style: c.s || 'sCur'});
-          return cell({v: (val ?? ''), style: c.s || 'sTxt'});
-        }).join(''))).join('');
-        return `
-          <Worksheet ss:Name="${xmlEsc(name)}">
-            <Table>
-              ${colsXml}
-              ${header}
-              ${body}
-            </Table>
-          </Worksheet>
-        `;
-      }
-
-      function buildWorkbookXml({summary, dailyRows, tot, keptRows, omittedRows}) {
-        const styles = `
-  <Styles>
-    <Style ss:ID="sHead">
-      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
-      <Font ss:Bold="1"/>
-      <Interior ss:Color="#D9E1F2" ss:Pattern="Solid"/>
-      <Borders>
-        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
-      </Borders>
-    </Style>
-    <Style ss:ID="sTitle">
-      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
-      <Font ss:Bold="1" ss:Size="12"/>
-    </Style>
-    <Style ss:ID="sTxt">
-      <Alignment ss:Vertical="Center"/>
-    </Style>
-    <Style ss:ID="sNum">
-      <NumberFormat ss:Format="#,##0"/>
-    </Style>
-    <Style ss:ID="sNumBold">
-      <Font ss:Bold="1"/>
-      <NumberFormat ss:Format="#,##0"/>
-    </Style>
-    <Style ss:ID="sCur">
-      <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
-    </Style>
-    <Style ss:ID="sCurBold">
-      <Alignment ss:Vertical="Center"/>
-      <Font ss:Bold="1"/>
-      <NumberFormat ss:Format="[$₹-400]#,##0.00"/>
-    </Style>
-  </Styles>
-`;
-
-        // Kept Transactions sheet
-        const keptSheet = buildListSheet({
-  name: 'Kept Transactions',
-  rows: keptRows || [],
-  columns: [
-  { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
-  { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
-  { h:'CCH Transaction ID', a:'CCH_Transaction_ID', t:'s', w:140 },            // <-- new
-  { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
-  { 
-    h:'Amount', 
-    a:r => (r.Journey_Type === 'Single Journey' ? 110 : 55),  // override amount
-    t:'c', 
-    w:110 
-  },
-  { h:'Journey Type', a:'Journey_Type', t:'s', w:120 },
-]
-});
-
-        // Omitted Transactions sheet
-        const omitSheet = buildListSheet({
-  name: 'Omitted Transactions',
-  rows: omittedRows || [],
-  columns: [
-  { h:'Date & Time', a:r=>new Date(r.TransactionProcessedTime).toLocaleString(), t:'s', w:160 },
-  { h:'Vehicle No', a:'VehicleRegistrationNumber', t:'s', w:120 },
-  { h:'CCH Transaction ID', a:'CCH_Transaction_ID', t:'s', w:140 },            // <-- new
-  { h:'Vehicle Type', a:r=> (r.MapperVehicleClass ?? ''), t:'s', w:120 },
-  { 
-    h:'Amount', 
-    a:() => 0,   // always 0 for omitted transactions
-    t:'c', 
-    w:110 
-  },
-  { h:'Txn No', a:'txn_no', t:'n', w:80 },
-]
-});
-
-        const xml =
-`<?xml version="1.0"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook
-  xmlns="urn:schemas-microsoft-com:office:spreadsheet"
-  xmlns:o="urn:schemas-microsoft-com:office:office"
-  xmlns:x="urn:schemas-microsoft-com:office:excel"
-  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
-  xmlns:html="http://www.w3.org/TR/REC-html40">
-  ${styles}
-  ${buildSummarySheet({summary, dailyRows, tot})}
-  ${keptSheet}
-  ${omitSheet}
-</Workbook>`;
-        return xml;
-      }
-
-      function downloadXls(xmlString, filename='report.xls') {
-        const blob = new Blob([xmlString], { type: 'application/vnd.ms-excel' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      }
-
-      // Export → one file, Summary sheet combines Overall + Daily
-      document.getElementById('btnExportExcel').onclick = () => {
-        const L = window.__LAST;
-        if (!L) { alert('Run a report first.'); return; }
-        try {
-          const xml = buildWorkbookXml(L);
-
-          // ✅ Build filename from site name + searched date range
-          const siteName = "Mundiyar_Toll";  // fixed site name
-          const from = document.getElementById('fromDate').value;
-          const to = document.getElementById('toDate').value;
-
-          let fname = `${siteName}_Annual_Pass`;
-          if (from && to) {
-            fname += `_${from}_to_${to}`;
-          }
-          fname += ".xls";
-
-          downloadXls(xml, fname);
-        } catch (e) {
-          console.error(e);
-          alert('Excel export failed: ' + (e && e.message ? e.message : e));
-        }
-      };
-
-      // Print -> PDF
-      document.getElementById('btnPrint').onclick = () => window.print();
   </script>
-
 </body>
 </html>
